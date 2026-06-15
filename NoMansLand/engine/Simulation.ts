@@ -1,31 +1,39 @@
-import { WorldState, PlayerState, Tower, Bullet, Obstacle, Crater, ArtilleryStrike, ArtilleryStatus, Effect, InputCommands, GamePhase } from '../types';
+import {
+  WorldState, PlayerState, Tower, Bullet, Obstacle, Crater,
+  ArtilleryStrike, ArtilleryStatus, Effect, InputCommands, Vec3,
+} from '../types';
 import { rngFromKey } from './rng';
 import {
-  FIELD_W, FIELD_H, FINISH_Y, START_Y,
+  FIELD_W, FIELD_D, FINISH_Z, START_Z,
   PLAYER_R, PLAYER_SPEED, CRAWL_MULT, SPRINT_MULT, PLAYER_MAX_HEALTH,
-  BULLET_DAMAGE, ARTILLERY_DAMAGE, WIRE_DAMAGE_PER_TICK,
-  TOWER_Y, TOWER_COUNT, BULLET_SPEED, BULLET_LIFE,
+  BULLET_DAMAGE, BULLET_SPEED, BULLET_LIFE, BULLET_SPREAD,
+  ARTILLERY_DAMAGE, WIRE_DAMAGE_PER_TICK,
+  TOWER_Y, TOWER_Z, TOWER_COUNT,
   ARTILLERY_BLAST_RADIUS, ARTILLERY_WARN_DURATION, ARTILLERY_BLAST_DURATION,
-  WIRE_BAND_YS, WIRE_GAP_W, FIXED_DT, CAMERA_LEAD,
+  WIRE_BAND_ZS, WIRE_GAP_W, FIXED_DT,
 } from '../constants';
 
-function hypot(ax: number, ay: number, bx: number, by: number) {
-  return Math.sqrt((ax - bx) ** 2 + (ay - by) ** 2);
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function dist3(a: Vec3, b: Vec3) {
+  return Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2 + (a.z-b.z)**2);
 }
 
+// 3D segment vs AABB — p1 and p2 are world-space endpoints, min/max are AABB corners.
 function segmentIntersectsAABB(
-  p1x: number, p1y: number, p2x: number, p2y: number,
-  minX: number, minY: number, maxX: number, maxY: number
+  p1: Vec3, p2: Vec3,
+  min: Vec3, max: Vec3,
 ): boolean {
-  const dx = p2x - p1x, dy = p2y - p1y;
+  const dx = p2.x - p1.x, dy = p2.y - p1.y, dz = p2.z - p1.z;
+  const axes = [
+    { d: dx, lo: min.x - p1.x, hi: max.x - p1.x, p: p1.x, mn: min.x, mx: max.x },
+    { d: dy, lo: min.y - p1.y, hi: max.y - p1.y, p: p1.y, mn: min.y, mx: max.y },
+    { d: dz, lo: min.z - p1.z, hi: max.z - p1.z, p: p1.z, mn: min.z, mx: max.z },
+  ];
   let tmin = 0, tmax = 1;
-  for (let axis = 0; axis < 2; axis++) {
-    const d = axis === 0 ? dx : dy;
-    const lo = axis === 0 ? (minX - p1x) : (minY - p1y);
-    const hi = axis === 0 ? (maxX - p1x) : (maxY - p1y);
+  for (const { d, lo, hi, p, mn, mx } of axes) {
     if (Math.abs(d) < 1e-9) {
-      const p = axis === 0 ? p1x : p1y;
-      if (p < (axis === 0 ? minX : minY) || p > (axis === 0 ? maxX : maxY)) return false;
+      if (p < mn || p > mx) return false;
     } else {
       const t1 = lo / d, t2 = hi / d;
       tmin = Math.max(tmin, Math.min(t1, t2));
@@ -35,24 +43,41 @@ function segmentIntersectsAABB(
   return tmax >= tmin;
 }
 
+function obstacleAABB(o: Obstacle): { min: Vec3; max: Vec3 } {
+  return {
+    min: { x: o.pos.x - o.halfX, y: 0,          z: o.pos.z - o.halfZ },
+    max: { x: o.pos.x + o.halfX, y: o.halfY * 2, z: o.pos.z + o.halfZ },
+  };
+}
+
+function bulletBlockedBy3D(from: Vec3, to: Vec3, obstacles: Obstacle[]): boolean {
+  for (const obs of obstacles) {
+    if (obs.kind === 'barbedWire') continue; // wire doesn't stop bullets
+    const { min, max } = obstacleAABB(obs);
+    if (segmentIntersectsAABB(from, to, min, max)) return true;
+  }
+  return false;
+}
+
+// ── Simulation ────────────────────────────────────────────────────────────────
+
 export class Simulation {
   private state: WorldState;
   private towers: Tower[] = [];
   private bulletPool: Bullet[] = [];
-  private artilleryIdx = 0;
+  private artIdx = 0;
   private blastDealt = new Set<number>();
   private rng: () => number;
 
   constructor(roomCode: string) {
-    this.rng = rngFromKey(roomCode + ':game');
+    this.rng = rngFromKey(roomCode + ':tick');
     const player: PlayerState = {
-      pos: { x: FIELD_W / 2, y: START_Y },
+      pos: { x: 0, y: 0, z: START_Z },
       health: PLAYER_MAX_HEALTH,
       maxHealth: PLAYER_MAX_HEALTH,
-      isCrawling: false,
-      isSprinting: false,
-      inCrater: false,
-      inWire: false,
+      isCrawling: false, isSprinting: false,
+      inCrater: false, inWire: false,
+      hitFlash: 0,
     };
     this.state = {
       phase: 'playing',
@@ -62,9 +87,8 @@ export class Simulation {
       obstacles: [],
       craters: [],
       artillerySchedule: [],
-      artilleryStatus: { phase: 'none', x: 0, y: 0, progress: 0, blastRadius: 0 },
+      artilleryStatus: { phase: 'none', x: 0, z: 0, progress: 0, blastRadius: 0 },
       effects: [],
-      cameraY: START_Y,
       distancePct: 0,
     };
     this.buildTowers(roomCode);
@@ -72,7 +96,10 @@ export class Simulation {
     this.buildCraters(roomCode);
     this.buildArtillerySchedule(roomCode);
     for (let i = 0; i < 300; i++) {
-      this.bulletPool.push({ pos: { x: 0, y: 0 }, prev: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, life: 0, active: false });
+      this.bulletPool.push({
+        pos: { x:0,y:0,z:0 }, prev: { x:0,y:0,z:0 },
+        vel: { x:0,y:0,z:0 }, life: 0, active: false,
+      });
     }
   }
 
@@ -80,14 +107,14 @@ export class Simulation {
     const rng = rngFromKey(roomCode + ':towers');
     const spacing = FIELD_W / (TOWER_COUNT + 1);
     for (let i = 0; i < TOWER_COUNT; i++) {
-      const baseX = spacing * (i + 1);
-      const sweep = 180 + rng() * 160;
+      const x = -FIELD_W / 2 + spacing * (i + 1);
+      const sweep = 20 + rng() * 18;
       this.towers.push({
-        x: baseX,
-        aimX: baseX,
-        targetAimX: baseX + rng() * sweep - sweep / 2,
-        aimTimer: rng() * 0.6 + 0.2,
-        fireTimer: rng() * 0.15,
+        x, y: TOWER_Y, z: TOWER_Z,
+        aimX: x,
+        targetAimX: x + (rng() - 0.5) * sweep * 2,
+        aimTimer: rng() * 0.8,
+        fireTimer: rng() * 0.3,
         fireInterval: 0.07 + rng() * 0.06,
         sweepRange: sweep,
       });
@@ -96,369 +123,358 @@ export class Simulation {
 
   private buildObstacles(roomCode: string) {
     const rng = rngFromKey(roomCode + ':obstacles');
-    const r = rng;
+    const obs = this.state.obstacles;
 
-    // Barbed wire bands
-    for (const bandY of WIRE_BAND_YS) {
-      const gapX = 80 + r() * (FIELD_W - 160 - WIRE_GAP_W);
-      this.state.obstacles.push({
+    // 3 barbed wire bands
+    for (const wz of WIRE_BAND_ZS) {
+      const gapX = -FIELD_W / 2 + 2 + rng() * (FIELD_W - 4 - WIRE_GAP_W);
+      obs.push({
         kind: 'barbedWire',
-        x: FIELD_W / 2, y: bandY,
-        w: FIELD_W, h: 22,
-        rotation: 0,
-        gapX: gapX + WIRE_GAP_W / 2,
-        gapW: WIRE_GAP_W,
+        pos: { x: 0, y: 0, z: wz },
+        halfX: FIELD_W / 2, halfY: 0.8, halfZ: 0.6,
+        rotation: 0, gapX, gapW: WIRE_GAP_W,
       });
     }
 
-    // Cover objects in bands between wire
-    const bands = [
-      [FINISH_Y + 60, WIRE_BAND_YS[0] - 60],
-      [WIRE_BAND_YS[0] + 60, WIRE_BAND_YS[1] - 60],
-      [WIRE_BAND_YS[1] + 60, WIRE_BAND_YS[2] - 60],
-      [WIRE_BAND_YS[2] + 60, START_Y - 80],
-    ];
+    // 5 tank wrecks — thick enough to actually block elevated fire
+    for (let i = 0; i < 5; i++) {
+      const x = -FIELD_W / 2 + 6 + rng() * (FIELD_W - 12);
+      const z = 8 + rng() * 72;
+      obs.push({
+        kind: 'tankWreck',
+        pos: { x, y: 0, z },
+        halfX: 2.1, halfY: 1.4, halfZ: 3.2,
+        rotation: rng() * Math.PI,
+      });
+    }
 
-    const placed: { x: number; y: number }[] = [];
-    const tryPlace = (kind: 'tankWreck' | 'sandbag', w: number, h: number, minY: number, maxY: number) => {
-      for (let attempt = 0; attempt < 25; attempt++) {
-        const x = 80 + r() * (FIELD_W - 160);
-        const y = minY + r() * (maxY - minY);
-        if (placed.some(p => hypot(p.x, p.y, x, y) < 130)) continue;
-        placed.push({ x, y });
-        this.state.obstacles.push({ kind, x, y, w, h, rotation: r() * Math.PI * 2 });
-        return;
-      }
-    };
-
-    for (const [minY, maxY] of bands) {
-      for (let i = 0; i < 4; i++) tryPlace('tankWreck', 74, 36, minY, maxY);
-      for (let i = 0; i < 3; i++) tryPlace('sandbag', 42, 22, minY, maxY);
+    // 5 sandbag walls
+    for (let i = 0; i < 5; i++) {
+      const x = -FIELD_W / 2 + 4 + rng() * (FIELD_W - 8);
+      const z = 6 + rng() * 74;
+      obs.push({
+        kind: 'sandbag',
+        pos: { x, y: 0, z },
+        halfX: 2.5, halfY: 0.65, halfZ: 0.45,
+        rotation: rng() * Math.PI,
+      });
     }
   }
 
   private buildCraters(roomCode: string) {
     const rng = rngFromKey(roomCode + ':craters');
-    for (let i = 0; i < 22; i++) {
-      const x = 50 + rng() * (FIELD_W - 100);
-      const y = FINISH_Y + 80 + rng() * (FIELD_H - FINISH_Y - 240);
-      const r = 22 + rng() * 18;
-      if (this.state.craters.some(c => hypot(c.x, c.y, x, y) < c.r + r + 30)) continue;
-      this.state.craters.push({ x, y, r });
+    for (let i = 0; i < 2; i++) {
+      this.state.craters.push({
+        x: -FIELD_W / 2 + 6 + rng() * (FIELD_W - 12),
+        z: 20 + rng() * 50,
+        r: 2.0 + rng() * 1.5,
+      });
     }
   }
 
   private buildArtillerySchedule(roomCode: string) {
     const rng = rngFromKey(roomCode + ':artillery');
-    let t = 5.5;
+    let t = 4.0;
     for (let i = 0; i < 30; i++) {
-      t += 4.5 + rng() * 7.5;
       this.state.artillerySchedule.push({
-        x: 70 + rng() * (FIELD_W - 140),
-        y: FINISH_Y + 100 + rng() * (FIELD_H - FINISH_Y - 280),
-        detonateAt: t,
+        x: -FIELD_W / 2 + 4 + rng() * (FIELD_W - 8),
+        z: 8 + rng() * 72,
+        detonateAt: t + ARTILLERY_WARN_DURATION,
         warnDuration: ARTILLERY_WARN_DURATION,
       });
+      t += 4.5 + rng() * 7.5;
     }
   }
 
-  getState(): WorldState {
-    return this.state;
-  }
+  // ── Tick ──────────────────────────────────────────────────────────────────
 
-  tick(input: InputCommands): void {
+  tick(input: InputCommands) {
     if (this.state.phase !== 'playing') return;
-    const dt = FIXED_DT;
-    this.state.timer += dt;
+    this.state.timer += FIXED_DT;
     this.updatePlayer(input);
     this.updateTowers();
     this.updateBullets();
     this.updateArtillery();
     this.updateEffects();
-    this.updateCamera();
     this.checkWinLose();
   }
 
   private updatePlayer(input: InputCommands) {
     const p = this.state.player;
 
-    if (input.crawl) {
-      p.isCrawling = true;
-      p.isSprinting = false;
-    } else {
-      p.isCrawling = false;
-      p.isSprinting = !p.isCrawling && input.sprint && (input.dx !== 0 || input.dy !== 0);
-    }
-
+    p.isCrawling = input.crawl;
+    p.isSprinting = !input.crawl && input.sprint;
     let speed = PLAYER_SPEED;
     if (p.isCrawling) speed *= CRAWL_MULT;
     else if (p.isSprinting) speed *= SPRINT_MULT;
 
-    const prevX = p.pos.x;
-    const prevY = p.pos.y;
+    // Wire slows extra
+    if (p.inWire && !p.isCrawling) speed *= 0.4;
 
-    let nx = p.pos.x + input.dx * speed;
-    let ny = p.pos.y + input.dy * speed;
+    const len = Math.hypot(input.dx, input.dz);
+    if (len > 0.01) {
+      const nx = input.dx / len, nz = input.dz / len;
+      p.pos.x = Math.max(-FIELD_W / 2 + 0.6, Math.min(FIELD_W / 2 - 0.6, p.pos.x + nx * speed * FIXED_DT));
+      p.pos.z = Math.max(FINISH_Z, Math.min(FIELD_D, p.pos.z + nz * speed * FIXED_DT));
+    }
 
-    nx = Math.max(PLAYER_R, Math.min(FIELD_W - PLAYER_R, nx));
-    ny = Math.max(FINISH_Y + PLAYER_R, Math.min(FIELD_H - PLAYER_R, ny));
+    // Collision push-out: solid obstacles (tanks, sandbags)
+    for (const obs of this.state.obstacles) {
+      if (obs.kind === 'barbedWire') continue;
+      const r    = PLAYER_R;
+      const eMinX = obs.pos.x - obs.halfX - r;
+      const eMaxX = obs.pos.x + obs.halfX + r;
+      const eMinZ = obs.pos.z - obs.halfZ - r;
+      const eMaxZ = obs.pos.z + obs.halfZ + r;
+      if (p.pos.x <= eMinX || p.pos.x >= eMaxX) continue;
+      if (p.pos.z <= eMinZ || p.pos.z >= eMaxZ) continue;
+      const dxL = p.pos.x - eMinX, dxR = eMaxX - p.pos.x;
+      const dzN = p.pos.z - eMinZ, dzF = eMaxZ - p.pos.z;
+      if (Math.min(dxL, dxR) <= Math.min(dzN, dzF)) {
+        p.pos.x = dxL < dxR ? eMinX : eMaxX;
+      } else {
+        p.pos.z = dzN < dzF ? eMinZ : eMaxZ;
+      }
+    }
 
-    // Wire collision
+    // Player Y: standing = 0, crawling = flat on ground (visual only via GroupRef)
+    p.pos.y = 0;
+
+    // Crater detection
+    p.inCrater = this.state.craters.some(c => Math.hypot(p.pos.x - c.x, p.pos.z - c.z) < c.r);
+
+    // Barbed wire detection & damage
     p.inWire = false;
     for (const obs of this.state.obstacles) {
       if (obs.kind !== 'barbedWire') continue;
-      const inBand = ny > obs.y - obs.h / 2 - PLAYER_R && ny < obs.y + obs.h / 2 + PLAYER_R;
-      if (!inBand) continue;
-      const gx = obs.gapX ?? FIELD_W / 2;
-      const hw = obs.gapW ? obs.gapW / 2 : 40;
-      const inGap = nx > gx - hw && nx < gx + hw;
-      if (inGap) continue;
-      p.inWire = true;
-      if (!p.isCrawling) {
-        ny = prevY;
-      } else {
+      const nearZ = Math.abs(p.pos.z - obs.pos.z) < 1.1;
+      if (!nearZ) continue;
+      const inGap = obs.gapX !== undefined && p.pos.x >= obs.gapX && p.pos.x <= obs.gapX! + obs.gapW!;
+      if (!inGap) {
+        p.inWire = true;
         p.health -= WIRE_DAMAGE_PER_TICK;
       }
     }
 
-    p.pos.x = nx;
-    p.pos.y = ny;
+    // Distance percent
+    this.state.distancePct = Math.max(0, Math.min(1, 1 - (p.pos.z - FINISH_Z) / (START_Z - FINISH_Z)));
 
-    // Cover check
-    p.inCrater = this.state.craters.some(c => hypot(p.pos.x, p.pos.y, c.x, c.y) < c.r * 0.85);
-  }
-
-  private getBullet(): Bullet | null {
-    for (const b of this.bulletPool) {
-      if (!b.active) return b;
-    }
-    return null;
+    if (p.hitFlash > 0) p.hitFlash -= FIXED_DT;
   }
 
   private updateTowers() {
-    const dt = FIXED_DT;
-    for (const t of this.towers) {
-      t.aimTimer -= dt;
-      if (t.aimTimer <= 0) {
-        t.targetAimX = t.x + (this.rng() * 2 - 1) * t.sweepRange;
-        t.targetAimX = Math.max(20, Math.min(FIELD_W - 20, t.targetAimX));
-        t.aimTimer = 0.2 + this.rng() * 0.5;
-      }
-      t.aimX += (t.targetAimX - t.aimX) * 0.1;
+    const p   = this.state.player;
+    const rng = this.rng;
 
-      t.fireTimer -= dt;
-      if (t.fireTimer <= 0) {
-        t.fireTimer = t.fireInterval + this.rng() * 0.03;
-        const b = this.getBullet();
-        if (!b) continue;
-        b.active = true;
-        b.life = BULLET_LIFE;
-        b.pos.x = t.x;
-        b.pos.y = TOWER_Y;
-        b.prev.x = t.x;
-        b.prev.y = TOWER_Y;
-        const spread = 20 + this.rng() * 12;
-        const tx = t.aimX + (this.rng() * 2 - 1) * spread;
-        const dx = tx - t.x;
-        const dy = FIELD_H - TOWER_Y;
-        const mag = Math.sqrt(dx * dx + dy * dy);
-        b.vel.x = (dx / mag) * BULLET_SPEED;
-        b.vel.y = (dy / mag) * BULLET_SPEED;
-        this.state.bullets.push(b);
+    for (const tower of this.towers) {
+      // All towers track the player — each lerps its aim independently
+      tower.aimX += (p.pos.x - tower.aimX) * Math.min(1, 2.5 * FIXED_DT);
+
+      tower.fireTimer -= FIXED_DT;
+      if (tower.fireTimer <= 0) {
+        tower.fireTimer = tower.fireInterval;
+
+        // 70% of shots are poorly aimed (wild miss), 30% are on-target
+        const badShot = rng() < 0.70;
+        this.fireBullet(
+          { x: tower.x, y: tower.y, z: tower.z },
+          {
+            x: tower.aimX + (rng() - 0.5) * (badShot ? 22 : 2.0),
+            y: p.pos.y + (p.isCrawling ? 0.15 : 0.85),
+            z: p.pos.z  + (rng() - 0.5) * (badShot ? 16 : 1.5),
+          },
+        );
       }
     }
   }
 
+  private fireBullet(from: Vec3, target: Vec3) {
+    const bullet = this.bulletPool.find(b => !b.active);
+    if (!bullet) return;
+    const dx = target.x - from.x, dy = target.y - from.y, dz = target.z - from.z;
+    const len = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
+    bullet.active = true;
+    bullet.life = BULLET_LIFE;
+    bullet.pos = { ...from };
+    bullet.prev = { ...from };
+    bullet.vel = { x: dx/len * BULLET_SPEED, y: dy/len * BULLET_SPEED, z: dz/len * BULLET_SPEED };
+  }
+
   private updateBullets() {
-    const dt = FIXED_DT;
     const p = this.state.player;
-    const toRemove: number[] = [];
+    const playerHeight = p.isCrawling ? 0.3 : 0.9;
 
-    for (let i = this.state.bullets.length - 1; i >= 0; i--) {
-      const b = this.state.bullets[i];
-      b.prev.x = b.pos.x;
-      b.prev.y = b.pos.y;
-      b.pos.x += b.vel.x;
-      b.pos.y += b.vel.y;
-      b.life -= dt;
+    for (const b of this.bulletPool) {
+      if (!b.active) continue;
+      b.life -= FIXED_DT;
+      if (b.life <= 0) { b.active = false; continue; }
 
-      if (!b.active || b.life <= 0 || b.pos.y > FIELD_H + 50) {
+      b.prev = { ...b.pos };
+      b.pos.x += b.vel.x * FIXED_DT;
+      b.pos.y += b.vel.y * FIXED_DT;
+      b.pos.z += b.vel.z * FIXED_DT;
+
+      // Out of field bounds
+      if (b.pos.z > FIELD_D + 10 || b.pos.z < -10 ||
+          Math.abs(b.pos.x) > FIELD_W) {
         b.active = false;
-        this.bulletPool.push(b);
-        toRemove.push(i);
         continue;
       }
 
-      // Check cover obstacle blocking
-      let blocked = false;
+      // Check player hit (sphere collision)
+      const playerCenter: Vec3 = { x: p.pos.x, y: playerHeight, z: p.pos.z };
+      if (dist3(b.pos, playerCenter) < PLAYER_R + 0.1) {
+        b.active = false;
+        const towerOrigin: Vec3 = { x: b.prev.x, y: TOWER_Y, z: TOWER_Z };
+        const blocked = bulletBlockedBy3D(towerOrigin, playerCenter, this.state.obstacles);
+        if (blocked) continue;
+        let hitChance = 1.0;
+        if (p.isCrawling) hitChance *= 0.18;
+        if (p.inCrater)   hitChance *= 0.38;
+        if (this.rng() < hitChance) {
+          this.damagePLayer(BULLET_DAMAGE);
+        }
+        continue;
+      }
+
+      // Check cover collision — bullet despawns if it hits solid obstacle
       for (const obs of this.state.obstacles) {
         if (obs.kind === 'barbedWire') continue;
-        const hw = obs.w / 2, hh = obs.h / 2;
-        if (segmentIntersectsAABB(b.prev.x, b.prev.y, b.pos.x, b.pos.y, obs.x - hw, obs.y - hh, obs.x + hw, obs.y + hh)) {
-          blocked = true;
-          this.spawnDirt(obs.x + (Math.random() - 0.5) * obs.w * 0.8, obs.y + (Math.random() - 0.5) * obs.h * 0.8, 2);
+        const { min, max } = obstacleAABB(obs);
+        if (
+          b.pos.x >= min.x && b.pos.x <= max.x &&
+          b.pos.y >= min.y && b.pos.y <= max.y &&
+          b.pos.z >= min.z && b.pos.z <= max.z
+        ) {
+          b.active = false;
+          // Dirt spark effect on obstacle
+          this.spawnDirt(b.pos.x, b.pos.y, b.pos.z);
           break;
         }
       }
-      if (blocked) {
-        b.active = false;
-        this.bulletPool.push(b);
-        toRemove.push(i);
-        continue;
-      }
-
-      // Player hit
-      const dist = hypot(b.pos.x, b.pos.y, p.pos.x, p.pos.y);
-      if (dist < PLAYER_R + 6) {
-        const inTrench = p.pos.y > FIELD_H - 160;
-        if (inTrench) {
-          // safe in trench
-        } else {
-          let hitChance: number;
-          if (p.inCrater && p.isCrawling) hitChance = 0.04;
-          else if (p.inCrater) hitChance = 0.22;
-          else if (p.isCrawling) hitChance = 0.28;
-          else hitChance = 0.82;
-          if (Math.random() < hitChance) {
-            p.health -= BULLET_DAMAGE;
-            this.spawnBlood(p.pos.x, p.pos.y);
-          }
-        }
-        b.active = false;
-        this.bulletPool.push(b);
-        toRemove.push(i);
-      }
     }
 
-    for (let i = toRemove.length - 1; i >= 0; i--) {
-      this.state.bullets.splice(toRemove[i], 1);
+    // Expose active bullets to state
+    this.state.bullets = this.bulletPool.filter(b => b.active);
+  }
+
+  private damagePLayer(amount: number) {
+    const p = this.state.player;
+    p.health = Math.max(0, p.health - amount);
+    p.hitFlash = 0.25;
+    // Blood effect at player position
+    for (let i = 0; i < 10; i++) {
+      const ang = this.rng() * Math.PI * 2;
+      const spd = 2 + this.rng() * 4;
+      this.state.effects.push({
+        type: 'blood',
+        x: p.pos.x + (this.rng() - 0.5) * 0.4,
+        y: 0.8 + this.rng() * 0.7,
+        z: p.pos.z + (this.rng() - 0.5) * 0.4,
+        vx: Math.cos(ang) * spd * 0.4,
+        vy: 1.5 + this.rng() * 2,
+        vz: Math.sin(ang) * spd * 0.4,
+        life: 0.6 + this.rng() * 0.4,
+        maxLife: 1.0,
+        size: 0.06 + this.rng() * 0.07,
+      });
+    }
+  }
+
+  private spawnDirt(x: number, y: number, z: number) {
+    for (let i = 0; i < 5; i++) {
+      const ang = this.rng() * Math.PI * 2;
+      const spd = 1.5 + this.rng() * 3;
+      this.state.effects.push({
+        type: 'dirt',
+        x, y, z,
+        vx: Math.cos(ang) * spd * 0.5,
+        vy: 1.2 + this.rng() * 2.5,
+        vz: Math.sin(ang) * spd * 0.5,
+        life: 0.4 + this.rng() * 0.4,
+        maxLife: 0.8,
+        size: 0.08 + this.rng() * 0.1,
+      });
     }
   }
 
   private updateArtillery() {
     const t = this.state.timer;
     const sched = this.state.artillerySchedule;
+    const status = this.state.artilleryStatus;
 
-    while (this.artilleryIdx < sched.length && t > sched[this.artilleryIdx].detonateAt + ARTILLERY_BLAST_DURATION) {
-      this.artilleryIdx++;
-    }
+    if (this.artIdx < sched.length) {
+      const strike = sched[this.artIdx];
+      const warnStart = strike.detonateAt - strike.warnDuration;
 
-    if (this.artilleryIdx >= sched.length) {
-      this.state.artilleryStatus = { phase: 'none', x: 0, y: 0, progress: 0, blastRadius: 0 };
-      return;
-    }
+      if (t >= warnStart && status.phase === 'none') {
+        status.phase = 'warning';
+        status.x = strike.x;
+        status.z = strike.z;
+        status.progress = 0;
+        status.blastRadius = ARTILLERY_BLAST_RADIUS;
+      }
 
-    const s = sched[this.artilleryIdx];
-    const warnStart = s.detonateAt - s.warnDuration;
-
-    if (t < warnStart) {
-      this.state.artilleryStatus = { phase: 'none', x: 0, y: 0, progress: 0, blastRadius: 0 };
-      return;
-    }
-
-    if (t < s.detonateAt) {
-      const progress = (t - warnStart) / s.warnDuration;
-      this.state.artilleryStatus = { phase: 'warning', x: s.x, y: s.y, progress, blastRadius: 0 };
-      return;
-    }
-
-    // Blast
-    const blastAge = t - s.detonateAt;
-    const blastProgress = 1 - blastAge / ARTILLERY_BLAST_DURATION;
-    this.state.artilleryStatus = {
-      phase: 'blast',
-      x: s.x, y: s.y,
-      progress: 1,
-      blastRadius: ARTILLERY_BLAST_RADIUS * (1 + blastProgress * 0.4),
-    };
-
-    if (!this.blastDealt.has(this.artilleryIdx)) {
-      this.blastDealt.add(this.artilleryIdx);
-      const p = this.state.player;
-      const dist = hypot(p.pos.x, p.pos.y, s.x, s.y);
-      if (dist < ARTILLERY_BLAST_RADIUS) {
-        const inTrench = p.pos.y > FIELD_H - 160;
-        if (!inTrench) {
-          const mult = (p.inCrater && p.isCrawling) ? 0.08 : (p.isCrawling ? 0.35 : 1.0);
-          p.health -= ARTILLERY_DAMAGE * mult;
+      if (status.phase === 'warning') {
+        status.progress = Math.min(1, (t - warnStart) / strike.warnDuration);
+        if (t >= strike.detonateAt) {
+          status.phase = 'blast';
+          status.progress = 0;
+          // Dynamically create a new crater at impact site
+          this.state.craters.push({ x: strike.x, z: strike.z, r: 2.5 + this.rng() * 1.8 });
+          // Explosion effects
+          for (let i = 0; i < 20; i++) {
+            const ang = this.rng() * Math.PI * 2;
+            const spd = 3 + this.rng() * 8;
+            this.state.effects.push({
+              type: 'explosion',
+              x: strike.x + (this.rng()-0.5)*2, y: 0, z: strike.z + (this.rng()-0.5)*2,
+              vx: Math.cos(ang)*spd, vy: 2+this.rng()*6, vz: Math.sin(ang)*spd,
+              life: 0.8 + this.rng() * 0.8, maxLife: 1.6,
+              size: 0.2 + this.rng() * 0.3,
+            });
+          }
         }
       }
-      this.spawnExplosion(s.x, s.y);
-      this.state.craters.push({ x: s.x, y: s.y, r: 28 + Math.random() * 14 });
-    }
-  }
 
-  private spawnDirt(x: number, y: number, count: number) {
-    for (let i = 0; i < count; i++) {
-      const angle = Math.random() * Math.PI * 2;
-      const speed = 1 + Math.random() * 3;
-      this.state.effects.push({
-        type: 'dirt', x, y,
-        vx: Math.cos(angle) * speed,
-        vy: Math.sin(angle) * speed,
-        life: 0.4 + Math.random() * 0.4,
-        maxLife: 0.5,
-        size: 2 + Math.random() * 3,
-      });
-    }
-  }
+      if (status.phase === 'blast') {
+        status.progress += FIXED_DT / ARTILLERY_BLAST_DURATION;
+        if (status.progress >= 1) {
+          status.phase = 'none';
+          this.artIdx++;
+        }
+        // Damage player if in blast radius (once per strike)
+        if (!this.blastDealt.has(this.artIdx)) {
+          const p = this.state.player;
+          const dist = Math.hypot(p.pos.x - strike.x, p.pos.z - strike.z);
+          if (dist < ARTILLERY_BLAST_RADIUS) {
+            this.blastDealt.add(this.artIdx);
+            const dmg = p.inCrater ? ARTILLERY_DAMAGE * 0.3 : ARTILLERY_DAMAGE;
+            this.damagePLayer(dmg);
+          }
+        }
 
-  private spawnBlood(x: number, y: number) {
-    for (let i = 0; i < 4; i++) {
-      const angle = Math.random() * Math.PI * 2;
-      const speed = 0.5 + Math.random() * 2;
-      this.state.effects.push({
-        type: 'blood', x, y,
-        vx: Math.cos(angle) * speed,
-        vy: Math.sin(angle) * speed,
-        life: 0.6 + Math.random() * 0.4,
-        maxLife: 0.8,
-        size: 3 + Math.random() * 4,
-      });
-    }
-  }
-
-  private spawnExplosion(x: number, y: number) {
-    for (let i = 0; i < 18; i++) {
-      const angle = Math.random() * Math.PI * 2;
-      const speed = 2 + Math.random() * 6;
-      this.state.effects.push({
-        type: i < 10 ? 'dirt' : 'smoke', x, y,
-        vx: Math.cos(angle) * speed,
-        vy: Math.sin(angle) * speed,
-        life: 0.8 + Math.random() * 0.8,
-        maxLife: 1.4,
-        size: 4 + Math.random() * 10,
-      });
+      }
     }
   }
 
   private updateEffects() {
-    const dt = FIXED_DT;
-    for (const e of this.state.effects) {
-      e.x += e.vx;
-      e.y += e.vy;
-      e.vx *= 0.92;
-      e.vy *= 0.92;
-      e.life -= dt;
+    for (const fx of this.state.effects) {
+      fx.x += fx.vx * FIXED_DT;
+      fx.y += fx.vy * FIXED_DT;
+      fx.z += fx.vz * FIXED_DT;
+      fx.vy -= 9.8 * FIXED_DT; // gravity
+      fx.life -= FIXED_DT;
     }
-    this.state.effects = this.state.effects.filter(e => e.life > 0);
-  }
-
-  private updateCamera() {
-    const target = this.state.player.pos.y - CAMERA_LEAD;
-    this.state.cameraY += (target - this.state.cameraY) * 0.1;
-    const totalDist = START_Y - FINISH_Y;
-    const remaining = this.state.player.pos.y - FINISH_Y;
-    this.state.distancePct = Math.max(0, Math.min(1, 1 - remaining / totalDist));
+    this.state.effects = this.state.effects.filter(fx => fx.life > 0);
   }
 
   private checkWinLose() {
-    if (this.state.player.pos.y <= FINISH_Y + PLAYER_R) {
-      this.state.phase = 'victory';
-    } else if (this.state.player.health <= 0) {
-      this.state.player.health = 0;
-      this.state.phase = 'dead';
-    }
+    const p = this.state.player;
+    if (p.health <= 0) this.state.phase = 'dead';
+    if (p.pos.z <= FINISH_Z) this.state.phase = 'victory';
   }
+
+  getState(): WorldState { return this.state; }
+  getTowers(): Tower[]   { return this.towers; }
 }

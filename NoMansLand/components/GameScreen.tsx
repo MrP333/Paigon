@@ -1,676 +1,745 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useRef, useEffect, useCallback, useState, useMemo } from 'react';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import * as THREE from 'three';
 import { Socket } from 'socket.io-client';
-import { GameConfig, ResultData, InputCommands, WorldState } from '../types';
+import { GameConfig, ResultData, InputCommands, WorldState, Obstacle } from '../types';
 import { Simulation } from '../engine/Simulation';
 import {
-  CW, CH, FIELD_W, FIELD_H,
-  FINISH_Y, PLAYER_R,
-  ARTILLERY_BLAST_RADIUS, ARTILLERY_WARN_DURATION,
-  WIRE_BAND_YS, WIRE_GAP_W,
-  FIXED_DT,
+  FIELD_W, FIELD_D, BUNKER_H, TOWER_Y, TOWER_Z, TOWER_COUNT,
+  FINISH_Z, START_Z, WIRE_BAND_ZS, ARTILLERY_BLAST_RADIUS,
 } from '../constants';
 
-// ── Offscreen mud texture ────────────────────────────────────────────────────
-function buildMudCanvas(): HTMLCanvasElement {
-  const c = document.createElement('canvas');
-  c.width = FIELD_W; c.height = FIELD_H;
-  const ctx = c.getContext('2d')!;
-
-  ctx.fillStyle = '#0d0a06';
-  ctx.fillRect(0, 0, FIELD_W, FIELD_H);
-
-  // Subtle mud variation
-  for (let i = 0; i < 28000; i++) {
-    const x = Math.random() * FIELD_W;
-    const y = Math.random() * FIELD_H;
-    const s = 1 + Math.random() * 2.5;
-    const a = 0.015 + Math.random() * 0.04;
-    ctx.fillStyle = `rgba(${30 + Math.random() * 20},${18 + Math.random() * 12},${6 + Math.random() * 8},${a})`;
-    ctx.fillRect(x, y, s, s);
-  }
-
-  // Subtle horizontal mud streaks (shell drag lines)
-  ctx.globalAlpha = 0.025;
-  for (let i = 0; i < 120; i++) {
-    const y = Math.random() * FIELD_H;
-    const len = 40 + Math.random() * 200;
-    const x = Math.random() * FIELD_W;
-    ctx.strokeStyle = '#5a3a1a';
-    ctx.lineWidth = 0.5 + Math.random() * 1.5;
-    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + len, y + (Math.random() - 0.5) * 6); ctx.stroke();
-  }
-  ctx.globalAlpha = 1;
-  return c;
-}
-
-// ── Draw helpers ─────────────────────────────────────────────────────────────
-function drawTrenches(ctx: CanvasRenderingContext2D) {
-  // Enemy trench (top — goal)
-  ctx.fillStyle = 'rgba(0,200,90,0.08)';
-  ctx.fillRect(0, 0, FIELD_W, FINISH_Y);
-  ctx.strokeStyle = 'rgba(0,255,120,0.35)';
-  ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(0, FINISH_Y); ctx.lineTo(FIELD_W, FINISH_Y); ctx.stroke();
-
-  // "CROSS HERE" label
-  ctx.save();
-  ctx.globalAlpha = 0.5;
-  ctx.fillStyle = '#00ff88';
-  ctx.font = 'bold 11px monospace';
-  ctx.letterSpacing = '3px';
-  ctx.textAlign = 'center';
-  ctx.fillText('— ENEMY TRENCH —', FIELD_W / 2, FINISH_Y - 12);
-  ctx.restore();
-
-  // Allied trench (bottom — start)
-  const startY = FIELD_H - 110;
-  ctx.fillStyle = 'rgba(34,211,238,0.05)';
-  ctx.fillRect(0, startY, FIELD_W, 110);
-  ctx.strokeStyle = 'rgba(34,211,238,0.2)';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.moveTo(0, startY); ctx.lineTo(FIELD_W, startY); ctx.stroke();
-}
-
-function drawCrater(ctx: CanvasRenderingContext2D, crater: { x: number; y: number; r: number }) {
-  const { x, y, r } = crater;
-  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-  g.addColorStop(0, 'rgba(4,3,2,0.9)');
-  g.addColorStop(0.65, 'rgba(8,6,3,0.7)');
-  g.addColorStop(1, 'rgba(20,14,8,0)');
-  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
-  ctx.fillStyle = g; ctx.fill();
-
-  // Rim highlight
-  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
-  ctx.strokeStyle = 'rgba(60,40,20,0.4)'; ctx.lineWidth = 2; ctx.stroke();
-}
-
-function drawObstacle(ctx: CanvasRenderingContext2D, obs: { kind: string; x: number; y: number; w: number; h: number; rotation: number; gapX?: number; gapW?: number }) {
-  if (obs.kind === 'barbedWire') {
-    const gx = obs.gapX ?? obs.x;
-    const hw = obs.gapW ? obs.gapW / 2 : 40;
-    const leftEnd = obs.x - obs.w / 2;
-    const rightEnd = obs.x + obs.w / 2;
-
-    ctx.save();
-    ctx.strokeStyle = '#6b4a2a';
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([4, 3]);
-    ctx.globalAlpha = 0.7;
-
-    // Left segment
-    if (gx - hw > leftEnd) {
-      drawWireSegment(ctx, leftEnd, obs.y, gx - hw, obs.y);
-    }
-    // Right segment
-    if (gx + hw < rightEnd) {
-      drawWireSegment(ctx, gx + hw, obs.y, rightEnd, obs.y);
-    }
-
-    // Gap marker
-    ctx.setLineDash([]);
-    ctx.globalAlpha = 0.25;
-    ctx.strokeStyle = '#22d3ee';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(gx - hw, obs.y - 8); ctx.lineTo(gx - hw, obs.y + 8);
-    ctx.moveTo(gx + hw, obs.y - 8); ctx.lineTo(gx + hw, obs.y + 8);
-    ctx.stroke();
-
-    ctx.restore();
-    return;
-  }
-
-  ctx.save();
-  ctx.translate(obs.x, obs.y);
-  ctx.rotate(obs.rotation);
-
-  if (obs.kind === 'tankWreck') {
-    // Hull
-    ctx.fillStyle = '#1c1408';
-    ctx.strokeStyle = '#3a2810';
-    ctx.lineWidth = 1.5;
-    const hw = obs.w / 2, hh = obs.h / 2;
-    ctx.fillRect(-hw, -hh, obs.w, obs.h);
-    ctx.strokeRect(-hw, -hh, obs.w, obs.h);
-    // Turret
-    ctx.fillStyle = '#141008';
-    ctx.beginPath(); ctx.ellipse(0, 0, obs.w * 0.28, obs.h * 0.4, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = '#2a1e0c'; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.ellipse(0, 0, obs.w * 0.28, obs.h * 0.4, 0, 0, Math.PI * 2); ctx.stroke();
-    // Barrel
-    ctx.strokeStyle = '#2a1e0c'; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.moveTo(0, -obs.h * 0.3); ctx.lineTo(0, -obs.h * 0.8); ctx.stroke();
-    // Rust streaks
-    ctx.globalAlpha = 0.15;
-    ctx.fillStyle = '#8b4513';
-    ctx.fillRect(-hw * 0.6, -hh * 0.4, obs.w * 0.15, obs.h * 0.8);
-    ctx.fillRect(hw * 0.3, -hh * 0.6, obs.w * 0.12, obs.h * 0.5);
-  } else {
-    // Sandbag cluster
-    const hw = obs.w / 2, hh = obs.h / 2;
-    const bagColor = '#2a1f0e';
-    const bagHighlight = '#3a2c14';
-    ctx.fillStyle = bagColor;
-    ctx.strokeStyle = bagHighlight;
-    ctx.lineWidth = 1;
-    // Draw 3-4 overlapping ovals
-    for (let i = 0; i < 3; i++) {
-      const bx = -hw + (i * obs.w / 2.5);
-      ctx.beginPath();
-      ctx.ellipse(bx, 0, obs.w * 0.22, obs.h * 0.45, 0, 0, Math.PI * 2);
-      ctx.fill(); ctx.stroke();
-    }
-    for (let i = 0; i < 2; i++) {
-      const bx = -hw * 0.5 + (i * obs.w * 0.55);
-      ctx.beginPath();
-      ctx.ellipse(bx, -obs.h * 0.3, obs.w * 0.2, obs.h * 0.35, 0, 0, Math.PI * 2);
-      ctx.fill(); ctx.stroke();
-    }
-  }
-
-  ctx.restore();
-}
-
-function drawWireSegment(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number) {
-  const segs = Math.floor((x2 - x1) / 12);
-  ctx.beginPath();
-  ctx.moveTo(x1, y1);
-  for (let i = 0; i <= segs; i++) {
-    const t = i / segs;
-    const x = x1 + (x2 - x1) * t;
-    const jitter = (i % 2 === 0) ? -4 : 4;
-    ctx.lineTo(x, y1 + jitter);
-  }
-  ctx.stroke();
-}
-
-function drawPlayer(ctx: CanvasRenderingContext2D, player: WorldState['player']) {
-  const { pos, health, maxHealth, isCrawling, isSprinting, inCrater } = player;
-  const hRatio = health / maxHealth;
-  const r = isCrawling ? PLAYER_R * 0.65 : PLAYER_R;
-
-  // Glow
-  const glowR = r * (isSprinting ? 3.5 : 2.8);
-  const glowAlpha = isCrawling ? 0.08 : 0.18;
-  const glow = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, glowR);
-  glow.addColorStop(0, `rgba(255,255,255,${glowAlpha})`);
-  glow.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = glow;
-  ctx.beginPath(); ctx.arc(pos.x, pos.y, glowR, 0, Math.PI * 2); ctx.fill();
-
-  // Sprint trail
-  if (isSprinting) {
-    ctx.save();
-    ctx.globalAlpha = 0.12;
-    for (let i = 1; i <= 3; i++) {
-      ctx.beginPath();
-      ctx.arc(pos.x, pos.y + i * 5, r * (1 - i * 0.2), 0, Math.PI * 2);
-      ctx.fillStyle = '#fff'; ctx.fill();
-    }
-    ctx.restore();
-  }
-
-  // Main circle
-  ctx.beginPath(); ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2);
-  ctx.fillStyle = `rgba(255,255,255,${0.65 + 0.3 * hRatio})`;
-  ctx.fill();
-
-  // Health arc
-  if (hRatio < 1) {
-    ctx.beginPath();
-    ctx.arc(pos.x, pos.y, r + 4, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * hRatio);
-    ctx.strokeStyle = hRatio > 0.5 ? '#00ff88' : hRatio > 0.25 ? '#ffaa00' : '#ff3333';
-    ctx.lineWidth = 2;
-    ctx.lineCap = 'round';
-    ctx.stroke();
-  }
-
-  // In-crater indicator (subtle cyan ring)
-  if (inCrater) {
-    ctx.save();
-    ctx.globalAlpha = 0.3;
-    ctx.beginPath(); ctx.arc(pos.x, pos.y, r + 7, 0, Math.PI * 2);
-    ctx.strokeStyle = '#22d3ee'; ctx.lineWidth = 1.5; ctx.stroke();
-    ctx.restore();
-  }
-}
-
-function drawBullet(ctx: CanvasRenderingContext2D, b: WorldState['bullets'][number]) {
-  if (!b.active) return;
-  ctx.save();
-  ctx.globalAlpha = 0.88;
-
-  const g = ctx.createLinearGradient(b.prev.x, b.prev.y, b.pos.x, b.pos.y);
-  g.addColorStop(0, 'rgba(255,220,80,0)');
-  g.addColorStop(0.6, 'rgba(255,230,120,0.5)');
-  g.addColorStop(1, 'rgba(255,245,180,1)');
-  ctx.strokeStyle = g;
-  ctx.lineWidth = 1.8;
-  ctx.beginPath(); ctx.moveTo(b.prev.x, b.prev.y); ctx.lineTo(b.pos.x, b.pos.y); ctx.stroke();
-
-  ctx.beginPath(); ctx.arc(b.pos.x, b.pos.y, 1.8, 0, Math.PI * 2);
-  ctx.fillStyle = '#fff'; ctx.fill();
-  ctx.restore();
-}
-
-function drawArtillery(ctx: CanvasRenderingContext2D, status: WorldState['artilleryStatus']) {
-  if (status.phase === 'warning') {
-    const maxR = ARTILLERY_BLAST_RADIUS;
-    const ringR = maxR * status.progress;
-    const pulse = 0.5 + 0.5 * Math.sin(Date.now() * 0.012);
-
-    // Danger fill
-    ctx.save();
-    ctx.globalAlpha = 0.08 + 0.04 * status.progress;
-    ctx.beginPath(); ctx.arc(status.x, status.y, maxR, 0, Math.PI * 2);
-    ctx.fillStyle = '#ff5500'; ctx.fill();
-    ctx.restore();
-
-    // Expanding ring
-    ctx.save();
-    ctx.globalAlpha = 0.55 + 0.35 * pulse;
-    ctx.beginPath(); ctx.arc(status.x, status.y, ringR, 0, Math.PI * 2);
-    ctx.strokeStyle = status.progress > 0.7 ? '#ff2200' : '#ff7700';
-    ctx.lineWidth = 2.2; ctx.stroke();
-    ctx.restore();
-
-    // Crosshair
-    ctx.save();
-    ctx.globalAlpha = 0.3 * status.progress;
-    ctx.strokeStyle = '#ff5500'; ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(status.x - maxR * 0.6, status.y); ctx.lineTo(status.x + maxR * 0.6, status.y);
-    ctx.moveTo(status.x, status.y - maxR * 0.6); ctx.lineTo(status.x, status.y + maxR * 0.6);
-    ctx.stroke();
-    ctx.restore();
-  } else if (status.phase === 'blast') {
-    const r = status.blastRadius;
-    ctx.save();
-    const g = ctx.createRadialGradient(status.x, status.y, 0, status.x, status.y, r);
-    g.addColorStop(0, 'rgba(255,255,200,0.95)');
-    g.addColorStop(0.25, 'rgba(255,180,60,0.8)');
-    g.addColorStop(0.6, 'rgba(255,80,10,0.4)');
-    g.addColorStop(1, 'rgba(100,30,0,0)');
-    ctx.fillStyle = g;
-    ctx.beginPath(); ctx.arc(status.x, status.y, r, 0, Math.PI * 2); ctx.fill();
-    ctx.restore();
-  }
-}
-
-function drawEffect(ctx: CanvasRenderingContext2D, e: WorldState['effects'][number]) {
-  const t = e.life / e.maxLife;
-  ctx.save();
-  ctx.globalAlpha = t * 0.8;
-  if (e.type === 'dirt') {
-    ctx.fillStyle = `rgba(${50 + Math.random() * 20},${32},${12},1)`;
-    ctx.beginPath(); ctx.arc(e.x, e.y, e.size * t, 0, Math.PI * 2); ctx.fill();
-  } else if (e.type === 'smoke') {
-    ctx.fillStyle = 'rgba(30,22,12,0.4)';
-    ctx.beginPath(); ctx.arc(e.x, e.y, e.size * (2 - t), 0, Math.PI * 2); ctx.fill();
-  } else if (e.type === 'blood') {
-    ctx.fillStyle = 'rgba(80,10,10,0.7)';
-    ctx.beginPath(); ctx.arc(e.x, e.y, e.size * t, 0, Math.PI * 2); ctx.fill();
-  }
-  ctx.restore();
-}
-
-function drawTowers(ctx: CanvasRenderingContext2D) {
-  const towerXs = [1, 2, 3, 4, 5, 6, 7].map(i => (FIELD_W / 8) * i);
-  for (const tx of towerXs) {
-    // Tower body
-    ctx.fillStyle = '#0e0a05';
-    ctx.strokeStyle = '#2a1e0c';
-    ctx.lineWidth = 1;
-    ctx.fillRect(tx - 10, -55, 20, 60);
-    ctx.strokeRect(tx - 10, -55, 20, 60);
-    // Gun barrel pointing down
-    ctx.strokeStyle = '#1a1208';
-    ctx.lineWidth = 4;
-    ctx.beginPath(); ctx.moveTo(tx, -10); ctx.lineTo(tx, 20); ctx.stroke();
-    // Muzzle flash (subtle always-on glow)
-    ctx.save();
-    ctx.globalAlpha = 0.06;
-    ctx.fillStyle = '#ffd080';
-    ctx.beginPath(); ctx.arc(tx, 18, 8, 0, Math.PI * 2); ctx.fill();
-    ctx.restore();
-  }
-}
-
-function render(ctx: CanvasRenderingContext2D, state: WorldState, mudCanvas: HTMLCanvasElement) {
-  const camOffsetY = state.cameraY - CH * 0.5;
-
-  ctx.save();
-  ctx.translate(0, -camOffsetY);
-
-  // Background mud
-  ctx.drawImage(mudCanvas, 0, 0);
-
-  // Trenches
-  drawTrenches(ctx);
-
-  // Towers (above enemy trench)
-  drawTowers(ctx);
-
-  // Craters
-  for (const c of state.craters) drawCrater(ctx, c);
-
-  // Obstacles
-  for (const o of state.obstacles) drawObstacle(ctx, o as any);
-
-  // Artillery
-  if (state.artilleryStatus.phase !== 'none') drawArtillery(ctx, state.artilleryStatus);
-
-  // Bullets
-  for (const b of state.bullets) drawBullet(ctx, b);
-
-  // Effects
-  for (const e of state.effects) drawEffect(ctx, e);
-
-  // Player
-  drawPlayer(ctx, state.player);
-
-  ctx.restore();
-
-  drawHUD(ctx, state);
-}
-
-function drawHUD(ctx: CanvasRenderingContext2D, state: WorldState) {
-  const p = state.player;
-  const hRatio = p.health / p.maxHealth;
-
-  // Top bar background
-  ctx.fillStyle = 'rgba(0,0,0,0.7)';
-  ctx.fillRect(0, 0, CW, 48);
-  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-  ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(0, 48); ctx.lineTo(CW, 48); ctx.stroke();
-
-  // Health bar (left)
-  const barW = 150, barH = 8, barX = 20, barY = 20;
-  ctx.fillStyle = 'rgba(255,255,255,0.08)';
-  ctx.roundRect(barX, barY, barW, barH, 4);
-  ctx.fill();
-  const hColor = hRatio > 0.5 ? '#00ff88' : hRatio > 0.25 ? '#ffaa00' : '#ff3333';
-  ctx.fillStyle = hColor;
-  ctx.roundRect(barX, barY, barW * hRatio, barH, 4);
-  ctx.fill();
-  ctx.fillStyle = 'rgba(255,255,255,0.35)';
-  ctx.font = '700 10px monospace';
-  ctx.textAlign = 'left';
-  ctx.fillText(`HP  ${Math.ceil(p.health)}`, barX, barY - 4);
-
-  // Timer (center)
-  const t = state.timer;
-  const mins = Math.floor(t / 60);
-  const secs = (t % 60).toFixed(2);
-  const timeStr = `${mins > 0 ? mins + ':' : ''}${secs.padStart(5, '0')}`;
-  ctx.fillStyle = '#fff';
-  ctx.font = 'bold 18px monospace';
-  ctx.textAlign = 'center';
-  ctx.fillText(timeStr, CW / 2, 30);
-
-  // Stance indicator
-  const stance = p.isCrawling ? '● CRAWL' : p.isSprinting ? '▶▶ SPRINT' : '▶ WALK';
-  const stanceColor = p.isCrawling ? '#fb923c' : p.isSprinting ? '#22d3ee' : 'rgba(255,255,255,0.4)';
-  ctx.fillStyle = stanceColor;
-  ctx.font = 'bold 9px monospace';
-  ctx.fillText(stance, CW / 2, 42);
-
-  // Distance progress (right)
-  const distBarW = 100, distBarH = 6, distBarX = CW - 130, distBarY = 21;
-  ctx.fillStyle = 'rgba(255,255,255,0.08)';
-  ctx.roundRect(distBarX, distBarY, distBarW, distBarH, 3);
-  ctx.fill();
-  ctx.fillStyle = 'rgba(0,255,136,0.7)';
-  ctx.roundRect(distBarX, distBarY, distBarW * state.distancePct, distBarH, 3);
-  ctx.fill();
-  ctx.fillStyle = 'rgba(255,255,255,0.35)';
-  ctx.font = '700 10px monospace';
-  ctx.textAlign = 'right';
-  ctx.fillText(`ADVANCE  ${Math.floor(state.distancePct * 100)}%`, CW - 20, distBarY - 4);
-
-  // Artillery warning flash overlay
-  if (state.artilleryStatus.phase === 'warning' && state.artilleryStatus.progress > 0.75) {
-    ctx.save();
-    ctx.globalAlpha = 0.06 + 0.08 * Math.sin(Date.now() * 0.018);
-    ctx.fillStyle = '#ff4400';
-    ctx.fillRect(0, 0, CW, CH);
-    ctx.restore();
-
-    ctx.fillStyle = 'rgba(255,80,0,0.85)';
-    ctx.font = 'bold 11px monospace';
-    ctx.textAlign = 'center';
-    ctx.letterSpacing = '4px';
-    ctx.fillText('⚠ INCOMING', CW / 2, 64);
-    ctx.letterSpacing = '0px';
-  }
-
-  // Controls reminder (bottom)
-  ctx.fillStyle = 'rgba(255,255,255,0.2)';
-  ctx.font = '10px monospace';
-  ctx.textAlign = 'center';
-  ctx.fillText('WASD · SHIFT sprint · C crawl', CW / 2, CH - 10);
-}
-
-// ── Input handler ─────────────────────────────────────────────────────────────
-class InputHandler {
-  private keys = new Set<string>();
-  private _crawlToggle = false;
-
-  constructor() {
-    window.addEventListener('keydown', this.onDown);
-    window.addEventListener('keyup', this.onUp);
-  }
-
-  private onDown = (e: KeyboardEvent) => {
-    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','w','a','s','d',' '].includes(e.key)) e.preventDefault();
-    this.keys.add(e.key.toLowerCase());
-  };
-
-  private onUp = (e: KeyboardEvent) => {
-    this.keys.delete(e.key.toLowerCase());
-  };
-
-  getCommands(): InputCommands {
-    const k = this.keys;
-    const dx = (k.has('d') || k.has('arrowright') ? 1 : 0) - (k.has('a') || k.has('arrowleft') ? 1 : 0);
-    const dy = (k.has('s') || k.has('arrowdown') ? 1 : 0) - (k.has('w') || k.has('arrowup') ? 1 : 0);
-    const mag = Math.sqrt(dx * dx + dy * dy) || 1;
-    return {
-      dx: dx / mag,
-      dy: dy / mag,
-      crawl: k.has('c') || k.has('control'),
-      sprint: k.has('shift'),
-    };
-  }
-
-  destroy() {
-    window.removeEventListener('keydown', this.onDown);
-    window.removeEventListener('keyup', this.onUp);
-  }
-}
-
-// ── Component ─────────────────────────────────────────────────────────────────
 interface Props {
   config: GameConfig;
   socket: Socket;
   onResult: (r: ResultData) => void;
 }
 
-export default function GameScreen({ config, socket, onResult }: Props) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [countdown, setCountdown] = useState(3);
-  const [phase, setPhase] = useState<'countdown' | 'playing' | 'waiting' | 'done'>('countdown');
-  const [opponentProgress, setOpponentProgress] = useState(0);
-  const phaseRef = useRef<string>('countdown');
+// ── Blood spot pool ───────────────────────────────────────────────────────────
 
-  useEffect(() => { phaseRef.current = phase; }, [phase]);
+const MAX_BLOOD = 15;
+interface BloodSpot { mesh: THREE.Mesh; life: number; maxLife: number; active: boolean; }
 
+// ── 3D Scene ──────────────────────────────────────────────────────────────────
+
+interface SceneProps {
+  sim: Simulation;
+  inputRef: React.MutableRefObject<InputCommands>;
+  onStateUpdate: (s: WorldState) => void;
+}
+
+function Scene({ sim, inputRef, onStateUpdate }: SceneProps) {
+  const { camera } = useThree();
+
+  // Player parts
+  const playerGroupRef = useRef<THREE.Group>(null);
+  const bodyRef        = useRef<THREE.Mesh>(null);
+  const headRef        = useRef<THREE.Mesh>(null);
+  const leftArmRef     = useRef<THREE.Mesh>(null);
+  const rightArmRef    = useRef<THREE.Mesh>(null);
+  const leftLegRef     = useRef<THREE.Mesh>(null);
+  const rightLegRef    = useRef<THREE.Mesh>(null);
+  const bloodGroupRef  = useRef<THREE.Group>(null);
+
+  // Instanced meshes
+  const bulletMeshRef      = useRef<THREE.InstancedMesh>(null);
+  const dirtMeshRef        = useRef<THREE.InstancedMesh>(null);
+  const bloodFxMeshRef     = useRef<THREE.InstancedMesh>(null);
+  const explosionFxMeshRef = useRef<THREE.InstancedMesh>(null);
+  const smokeMeshRef       = useRef<THREE.InstancedMesh>(null);
+  const fireMeshRef        = useRef<THREE.InstancedMesh>(null);
+  const craterMeshRef      = useRef<THREE.InstancedMesh>(null);
+
+  // Artillery ring
+  const artRingRef  = useRef<THREE.Mesh>(null);
+  const artBlastRef = useRef<THREE.Mesh>(null);
+
+  const bloodSpotsRef   = useRef<BloodSpot[]>([]);
+  const walkPhaseRef    = useRef(0);
+  const prevFlashRef    = useRef(0);
+  const accRef          = useRef(0);
+  const prevCraterCount = useRef(0);
+  const FIXED_DT        = 1 / 60;
+  const dummy           = useMemo(() => new THREE.Object3D(), []);
+
+  // Static world (obstacles don't change)
+  const world = useMemo(() => sim.getState(), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const wrecks    = useMemo(() => world.obstacles.filter(o => o.kind === 'tankWreck'), [world]);
+  const wireObs   = useMemo(() => world.obstacles.filter(o => o.kind === 'barbedWire'), [world]);
+
+  // Build blood pool
   useEffect(() => {
-    if (config.solo) return;
-    socket.on('nml:opponent-progress', ({ pct }: { pct: number }) => setOpponentProgress(pct));
-    socket.on('nml:result', (data: any) => {
-      phaseRef.current = 'done';
-      setPhase('done');
-      onResult({
-        won: data.winnerId === socket.id,
-        draw: data.draw ?? false,
-        myTimeMs: data.myTimeMs ?? null,
-        opponentTimeMs: data.opponentTimeMs ?? null,
-        winnerName: data.winnerName ?? '',
-      });
+    const grp = bloodGroupRef.current;
+    if (!grp) return;
+    const spots: BloodSpot[] = [];
+    for (let i = 0; i < MAX_BLOOD; i++) {
+      const mat  = new THREE.MeshBasicMaterial({ color: 0x8b0000, transparent: true, opacity: 1 });
+      const geo  = new THREE.SphereGeometry(0.055 + Math.random() * 0.065, 5, 4);
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.visible = false;
+      grp.add(mesh);
+      spots.push({ mesh, life: 0, maxLife: 2.5, active: false });
+    }
+    bloodSpotsRef.current = spots;
+    return () => spots.forEach(s => {
+      s.mesh.geometry.dispose();
+      (s.mesh.material as THREE.Material).dispose();
     });
-    return () => { socket.off('nml:opponent-progress'); socket.off('nml:result'); };
-  }, [socket, onResult, config.solo]);
-
-  useEffect(() => {
-    let n = 3;
-    const id = setInterval(() => {
-      n--;
-      if (n <= 0) {
-        clearInterval(id);
-        setCountdown(0);
-        setPhase('playing');
-        phaseRef.current = 'playing';
-      } else setCountdown(n);
-    }, 1000);
-    return () => clearInterval(id);
   }, []);
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d')!;
-    const mudCanvas = buildMudCanvas();
-    const sim = new Simulation(config.roomCode);
-    const input = new InputHandler();
-    let raf = 0;
-    let lastT = 0;
-    let acc = 0;
-    let started = false;
-    let progressTimer = 0;
-    let resultSent = false;
+  useFrame(({ clock }, rawDt) => {
+    const dt = Math.min(rawDt, 0.1);
+    accRef.current += dt;
+    while (accRef.current >= FIXED_DT) {
+      sim.tick(inputRef.current);
+      accRef.current -= FIXED_DT;
+    }
 
-    const loop = (t: number) => {
-      const dt = Math.min((t - lastT) / 1000, 0.05);
-      lastT = t;
+    const state = sim.getState();
+    onStateUpdate(state);
 
-      if (phaseRef.current === 'playing') {
-        started = true;
-        acc += dt;
-        while (acc >= FIXED_DT) {
-          sim.tick(input.getCommands());
-          acc -= FIXED_DT;
-        }
+    const p  = state.player;
+    const pg = playerGroupRef.current;
+    if (!pg) return;
 
-        const state = sim.getState();
+    // ── Camera ──────────────────────────────────────────────────────────────
+    camera.position.lerp(
+      new THREE.Vector3(p.pos.x, p.pos.y + 4.8, p.pos.z + 11),
+      0.10,
+    );
+    (camera as THREE.PerspectiveCamera).lookAt(p.pos.x, p.pos.y + 0.6, p.pos.z - 5);
 
-        // Opponent progress updates
-        if (!config.solo) {
-          progressTimer += dt;
-          if (progressTimer > 0.5) {
-            progressTimer = 0;
-            socket.emit('nml:progress', { roomCode: config.roomCode, pct: state.distancePct });
-          }
-        }
+    // ── Player group ─────────────────────────────────────────────────────────
+    pg.position.set(p.pos.x, 0, p.pos.z);
+    const targetTilt = p.isCrawling ? -Math.PI * 0.43 : 0;
+    pg.rotation.x += (targetTilt - pg.rotation.x) * 0.16;
 
-        // Win/lose
-        if (!resultSent && (state.phase === 'victory' || state.phase === 'dead')) {
-          resultSent = true;
-          const timeMs = Math.round(state.timer * 1000);
-          if (config.solo) {
-            phaseRef.current = 'done';
-            setPhase('done');
-            onResult({
-              won: state.phase === 'victory',
-              draw: false,
-              myTimeMs: state.phase === 'victory' ? timeMs : null,
-              opponentTimeMs: null,
-              winnerName: state.phase === 'victory' ? config.playerName : '',
-            });
-          } else {
-            if (state.phase === 'victory') {
-              socket.emit('nml:crossed', { roomCode: config.roomCode, timeMs });
-            } else {
-              socket.emit('nml:died', { roomCode: config.roomCode });
-            }
-            setPhase('waiting');
-            phaseRef.current = 'waiting';
-          }
+    // Walk animation — only when actually moving
+    const moving = Math.abs(inputRef.current.dx) + Math.abs(inputRef.current.dz) > 0.01;
+    if (moving) {
+      walkPhaseRef.current += dt * (p.isSprinting ? 9 : p.isCrawling ? 2.5 : 5.5);
+    }
+    const wp = walkPhaseRef.current;
+    const bodyBob = moving ? Math.abs(Math.sin(wp)) * 0.07 : 0;
+
+    if (leftLegRef.current)  leftLegRef.current.rotation.x  = moving ? Math.sin(wp) * 0.55 : 0;
+    if (rightLegRef.current) rightLegRef.current.rotation.x = moving ? Math.sin(wp + Math.PI) * 0.55 : 0;
+    if (leftArmRef.current)  leftArmRef.current.rotation.x  = moving ? Math.sin(wp + Math.PI) * 0.45 : 0;
+    if (rightArmRef.current) rightArmRef.current.rotation.x = moving ? Math.sin(wp) * 0.45 : 0;
+    if (bodyRef.current)  bodyRef.current.position.y  = 0.85 + bodyBob;
+    if (headRef.current)  headRef.current.position.y  = 1.30 + bodyBob;
+
+    // ── Hit flash ─────────────────────────────────────────────────────────────
+    const flashing = p.hitFlash > 0;
+    if (flashing !== (prevFlashRef.current > 0)) {
+      if (bodyRef.current) (bodyRef.current.material as THREE.MeshLambertMaterial).color.setHex(flashing ? 0xff2222 : 0x3a6a3a);
+      if (headRef.current) (headRef.current.material as THREE.MeshLambertMaterial).color.setHex(flashing ? 0xff4444 : 0xd4a88a);
+
+      // Spawn blood spots on rising edge
+      if (flashing) {
+        for (let k = 0; k < 3; k++) {
+          const spot = bloodSpotsRef.current.find(s => !s.active) ?? bloodSpotsRef.current[0];
+          const hitY = p.isCrawling ? 0.12 : 0.35 + Math.random() * 0.75;
+          spot.mesh.position.set((Math.random()-0.5)*0.3, hitY, -0.16 + (Math.random()-0.5)*0.12);
+          spot.mesh.visible = true;
+          spot.life    = spot.maxLife;
+          spot.active  = true;
+          (spot.mesh.material as THREE.MeshBasicMaterial).opacity = 0.92;
         }
       }
+    }
+    prevFlashRef.current = p.hitFlash;
 
-      render(ctx, sim.getState(), mudCanvas);
+    // Fade blood spots
+    for (const spot of bloodSpotsRef.current) {
+      if (!spot.active) continue;
+      spot.life -= dt;
+      (spot.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(0, spot.life / spot.maxLife) * 0.9;
+      if (spot.life <= 0) { spot.active = false; spot.mesh.visible = false; }
+    }
 
-      raf = requestAnimationFrame(loop);
+    // ── Bullets ───────────────────────────────────────────────────────────────
+    const im = bulletMeshRef.current;
+    if (im) {
+      const MAX = 300;
+      const bullets = state.bullets;
+      const n = Math.min(bullets.length, MAX);
+      for (let i = 0; i < n; i++) {
+        const b = bullets[i];
+        dummy.position.set(b.pos.x, b.pos.y, b.pos.z);
+        dummy.lookAt(b.pos.x + b.vel.x, b.pos.y + b.vel.y, b.pos.z + b.vel.z);
+        dummy.scale.set(0.04, 0.04, 0.22);
+        dummy.updateMatrix();
+        im.setMatrixAt(i, dummy.matrix);
+      }
+      dummy.scale.setScalar(0); dummy.updateMatrix();
+      for (let i = n; i < MAX; i++) im.setMatrixAt(i, dummy.matrix);
+      im.instanceMatrix.needsUpdate = true;
+    }
+
+    // ── Effect particles ──────────────────────────────────────────────────────
+    const updateFx = (mesh: THREE.InstancedMesh | null, type: string) => {
+      if (!mesh) return;
+      const list = state.effects.filter(e => e.type === type);
+      const n = Math.min(list.length, 200);
+      for (let i = 0; i < n; i++) {
+        const e = list[i];
+        dummy.position.set(e.x, e.y, e.z);
+        dummy.scale.setScalar(e.size * Math.max(0, e.life / e.maxLife));
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+      }
+      dummy.scale.setScalar(0); dummy.updateMatrix();
+      for (let i = n; i < 200; i++) mesh.setMatrixAt(i, dummy.matrix);
+      mesh.instanceMatrix.needsUpdate = true;
     };
+    updateFx(dirtMeshRef.current, 'dirt');
+    updateFx(bloodFxMeshRef.current, 'blood');
+    updateFx(explosionFxMeshRef.current, 'explosion');
 
-    raf = requestAnimationFrame(loop);
-    return () => { cancelAnimationFrame(raf); input.destroy(); };
-  }, [config, socket, onResult]);
+    // ── Tank smoke & fire ─────────────────────────────────────────────────────
+    const elapsedT = clock.elapsedTime;
+    const smokeMesh = smokeMeshRef.current;
+    if (smokeMesh) {
+      let idx = 0;
+      const PUFFS = 4;
+      for (const wreck of wrecks) {
+        for (let k = 0; k < PUFFS; k++) {
+          const cyc   = (elapsedT * 0.38 + k * 0.78 + wreck.pos.x * 0.07) % 3.2;
+          const y     = wreck.halfY * 2 + 0.6 + cyc * 2.2;
+          const ox    = Math.sin(elapsedT * 0.55 + k * 2.1 + wreck.pos.x * 0.3) * 0.45;
+          const oz    = Math.cos(elapsedT * 0.45 + k * 1.7 + wreck.pos.z * 0.3) * 0.35;
+          const scale = Math.max(0, (0.3 + cyc * 0.48) * (1 - cyc / 3.2));
+          dummy.position.set(wreck.pos.x + ox, y, wreck.pos.z + oz);
+          dummy.rotation.set(0, 0, 0);
+          dummy.scale.setScalar(scale);
+          dummy.updateMatrix();
+          smokeMesh.setMatrixAt(idx++, dummy.matrix);
+        }
+      }
+      dummy.scale.setScalar(0); dummy.updateMatrix();
+      const maxSmoke = wrecks.length * PUFFS + 1;
+      for (let i = idx; i < maxSmoke; i++) smokeMesh.setMatrixAt(i, dummy.matrix);
+      smokeMesh.instanceMatrix.needsUpdate = true;
+    }
+
+    const fireMesh = fireMeshRef.current;
+    if (fireMesh) {
+      for (let i = 0; i < wrecks.length; i++) {
+        const w       = wrecks[i];
+        const flicker = 0.65 + Math.sin(elapsedT * 14 + i * 1.3) * 0.35;
+        dummy.position.set(w.pos.x, w.halfY * 1.6, w.pos.z);
+        dummy.scale.setScalar(Math.max(0, flicker * 0.6));
+        dummy.updateMatrix();
+        fireMesh.setMatrixAt(i, dummy.matrix);
+      }
+      dummy.scale.setScalar(0); dummy.updateMatrix();
+      for (let i = wrecks.length; i < 6; i++) fireMesh.setMatrixAt(i, dummy.matrix);
+      fireMesh.instanceMatrix.needsUpdate = true;
+    }
+
+    // ── Dynamic craters ───────────────────────────────────────────────────────
+    const craterMesh = craterMeshRef.current;
+    if (craterMesh && state.craters.length !== prevCraterCount.current) {
+      prevCraterCount.current = state.craters.length;
+      for (let i = 0; i < state.craters.length; i++) {
+        const c = state.craters[i];
+        dummy.position.set(c.x, 0.02, c.z);
+        dummy.rotation.set(-Math.PI / 2, 0, 0);
+        dummy.scale.set(c.r, c.r, 1);
+        dummy.updateMatrix();
+        craterMesh.setMatrixAt(i, dummy.matrix);
+      }
+      dummy.rotation.set(0, 0, 0);
+      dummy.scale.setScalar(0); dummy.updateMatrix();
+      for (let i = state.craters.length; i < 40; i++) craterMesh.setMatrixAt(i, dummy.matrix);
+      craterMesh.count = 40;
+      craterMesh.instanceMatrix.needsUpdate = true;
+    }
+
+    // ── Artillery ring indicator ──────────────────────────────────────────────
+    const artRing  = artRingRef.current;
+    const artBlast = artBlastRef.current;
+    const art      = state.artilleryStatus;
+
+    if (artRing) {
+      if (art.phase === 'warning') {
+        artRing.visible = true;
+        artRing.position.set(art.x, 0.06, art.z);
+        const t = art.progress;
+        // Start as tiny dot, grow to full blast radius
+        artRing.scale.setScalar(0.04 + t * 0.96);
+        const mat = artRing.material as THREE.MeshBasicMaterial;
+        mat.color.setHex(t > 0.8 ? 0xff0000 : t > 0.5 ? 0xff5500 : 0xff9900);
+        mat.opacity = 0.35 + t * 0.55;
+      } else {
+        artRing.visible = false;
+      }
+    }
+
+    if (artBlast) {
+      if (art.phase === 'blast') {
+        artBlast.visible = true;
+        artBlast.position.set(art.x, 0.08, art.z);
+        const t = art.progress;
+        artBlast.scale.setScalar(1.0 + t * 0.25);
+        (artBlast.material as THREE.MeshBasicMaterial).opacity = (1 - t) * 0.75;
+      } else {
+        artBlast.visible = false;
+      }
+    }
+  });
+
+  const towerXs = useMemo(() => {
+    const sp = FIELD_W / (TOWER_COUNT + 1);
+    return Array.from({ length: TOWER_COUNT }, (_, i) => -FIELD_W / 2 + sp * (i + 1));
+  }, []);
 
   return (
-    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: '#03030a', userSelect: 'none' }}>
-      <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
-        <canvas
-          ref={canvasRef}
-          width={CW} height={CH}
-          style={{ width: '100%', height: '100%', display: 'block' }}
-          tabIndex={0}
-        />
+    <>
+      <ambientLight intensity={0.35} color={0xb0c4de} />
+      <directionalLight position={[20, 40, 60]} intensity={0.85} color={0xfff5e0} castShadow />
+      <fog attach="fog" args={[0x8fa0b0, 55, 140]} />
 
-        {phase === 'countdown' && (
-          <div style={{
-            position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            background: 'rgba(3,3,10,0.82)', backdropFilter: 'blur(4px)', flexDirection: 'column', gap: 16,
-          }}>
-            <div style={{ fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.3em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.35)' }}>
-              No Man's Land
-            </div>
-            <div style={{
-              fontSize: countdown === 0 ? '4.5rem' : '7rem', fontWeight: 800, letterSpacing: '-0.04em',
-              color: countdown === 0 ? '#00ff88' : '#fff',
-              textShadow: `0 0 60px ${countdown === 0 ? '#00ff88' : 'rgba(255,255,255,0.3)'}`,
-              animation: 'popIn 0.25s ease-out',
-            }}>
-              {countdown > 0 ? countdown : 'CHARGE!'}
-            </div>
-            <div style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.25)', letterSpacing: '0.1em' }}>
-              WASD to move · SHIFT sprint · C crawl
-            </div>
-            <style>{`@keyframes popIn { from { transform:scale(0.5); opacity:0; } to { transform:scale(1); opacity:1; } }`}</style>
-          </div>
-        )}
+      {/* Sky dome */}
+      <mesh>
+        <sphereGeometry args={[180, 16, 8]} />
+        <meshBasicMaterial color={0x617d8a} side={THREE.BackSide} />
+      </mesh>
 
-        {phase === 'waiting' && (
-          <div style={{
-            position: 'absolute', bottom: 60, left: '50%', transform: 'translateX(-50%)',
-            background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(6px)',
-            border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10,
-            padding: '10px 24px', fontSize: '0.78rem', color: 'rgba(255,255,255,0.5)', letterSpacing: '0.06em',
-          }}>
-            Waiting for opponent…
-          </div>
-        )}
+      {/* Ground — centred on the full field so nothing is see-through */}
+      <mesh position={[0, 0, FIELD_D / 2]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <planeGeometry args={[FIELD_W + 40, FIELD_D + 40]} />
+        <meshLambertMaterial color={0x8d7045} />
+      </mesh>
 
-        {/* Opponent progress bar (right edge) */}
-        {!config.solo && (
-          <div style={{
-            position: 'absolute', right: 12, top: 60, bottom: 20,
-            width: 6, background: 'rgba(255,255,255,0.06)', borderRadius: 3,
-            display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', overflow: 'hidden',
-          }}>
-            <div style={{
-              height: `${opponentProgress * 100}%`,
-              background: config.opponentColor || '#fb923c',
-              borderRadius: 3,
-              boxShadow: `0 0 8px ${config.opponentColor || '#fb923c'}`,
-              transition: 'height 0.4s ease',
-            }} />
-          </div>
-        )}
+      {/* Craters — dynamic, updated via instancedMesh */}
+      <instancedMesh ref={craterMeshRef} args={[undefined, undefined, 40]} frustumCulled={false}>
+        <circleGeometry args={[1, 18]} />
+        <meshLambertMaterial color={0x5a4020} />
+      </instancedMesh>
+
+      {/* Enemy bunker */}
+      <mesh position={[0, BUNKER_H / 2, -1.5]}>
+        <boxGeometry args={[FIELD_W + 8, BUNKER_H, 3]} />
+        <meshLambertMaterial color={0x7a7a70} />
+      </mesh>
+      {/* Battlements */}
+      {Array.from({ length: 14 }, (_, i) => (
+        <mesh key={i} position={[-FIELD_W / 2 + 2.5 + i * 4.5, BUNKER_H + 0.8, -2]}>
+          <boxGeometry args={[2.4, 1.6, 1.2]} />
+          <meshLambertMaterial color={0x6a6a60} />
+        </mesh>
+      ))}
+
+      {/* MG towers */}
+      {towerXs.map((tx, i) => (
+        <group key={i} position={[tx, 0, TOWER_Z]}>
+          <mesh position={[0, TOWER_Y - 0.6, 0]}>
+            <boxGeometry args={[2.2, 0.5, 2.2]} />
+            <meshLambertMaterial color={0x5a5a52} />
+          </mesh>
+          <mesh position={[0, TOWER_Y + 0.05, 0]}>
+            <boxGeometry args={[2.0, 0.6, 1.8]} />
+            <meshLambertMaterial color={0x9b8c6a} />
+          </mesh>
+          {/* MG barrel */}
+          <mesh position={[0, TOWER_Y + 0.3, 0.7]} rotation={[0.4, 0, 0]}>
+            <cylinderGeometry args={[0.05, 0.08, 1.2, 6]} />
+            <meshLambertMaterial color={0x333333} />
+          </mesh>
+          {([-0.8, 0.8] as number[]).map((ox, j) => (
+            <mesh key={j} position={[ox, TOWER_Y / 2, 0]}>
+              <cylinderGeometry args={[0.1, 0.12, TOWER_Y, 6]} />
+              <meshLambertMaterial color={0x5a5a52} />
+            </mesh>
+          ))}
+        </group>
+      ))}
+
+      {/* Allied trench */}
+      <mesh position={[0, 0.4, START_Z + 2]}>
+        <boxGeometry args={[FIELD_W + 6, 0.8, 3]} />
+        <meshLambertMaterial color={0x6b5a3a} />
+      </mesh>
+
+      {/* Obstacles */}
+      {world.obstacles.map((obs, i) => <ObstacleMesh key={i} obs={obs} />)}
+
+      {/* Barbed wire — gap position comes from the seeded obstacle data */}
+      {wireObs.map((w, i) => (
+        <WireBand key={i} z={w.pos.z} gapX={w.gapX!} gapW={w.gapW!} />
+      ))}
+
+      {/* Tank smoke (instanced, animated in useFrame) */}
+      <instancedMesh ref={smokeMeshRef} args={[undefined, undefined, wrecks.length * 4 + 1]} frustumCulled={false}>
+        <sphereGeometry args={[0.8, 6, 5]} />
+        <meshBasicMaterial color={0x404040} transparent opacity={0.5} depthWrite={false} />
+      </instancedMesh>
+
+      {/* Tank fire (instanced, flickering in useFrame) */}
+      <instancedMesh ref={fireMeshRef} args={[undefined, undefined, 6]} frustumCulled={false}>
+        <sphereGeometry args={[0.7, 6, 5]} />
+        <meshBasicMaterial color={0xff6600} transparent opacity={0.82} depthWrite={false} />
+      </instancedMesh>
+
+      {/* Artillery warning ring — full blast radius, scaled in useFrame */}
+      <mesh ref={artRingRef} rotation={[-Math.PI / 2, 0, 0]} visible={false}>
+        <ringGeometry args={[ARTILLERY_BLAST_RADIUS * 0.78, ARTILLERY_BLAST_RADIUS, 48]} />
+        <meshBasicMaterial color={0xff9900} transparent opacity={0.8} side={THREE.DoubleSide} depthWrite={false} />
+      </mesh>
+
+      {/* Artillery blast flash */}
+      <mesh ref={artBlastRef} rotation={[-Math.PI / 2, 0, 0]} visible={false}>
+        <circleGeometry args={[ARTILLERY_BLAST_RADIUS, 32]} />
+        <meshBasicMaterial color={0xff4400} transparent opacity={0.7} side={THREE.DoubleSide} depthWrite={false} />
+      </mesh>
+
+      {/* Player */}
+      <group ref={playerGroupRef}>
+        <mesh ref={bodyRef} position={[0, 0.85, 0]} castShadow>
+          <boxGeometry args={[0.5, 0.55, 0.28]} />
+          <meshLambertMaterial color={0x3a6a3a} />
+        </mesh>
+        <mesh ref={headRef} position={[0, 1.3, 0]}>
+          <boxGeometry args={[0.3, 0.3, 0.3]} />
+          <meshLambertMaterial color={0xd4a88a} />
+        </mesh>
+        {/* Helmet */}
+        <mesh position={[0, 1.46, 0]}>
+          <boxGeometry args={[0.34, 0.15, 0.36]} />
+          <meshLambertMaterial color={0x2d4a1e} />
+        </mesh>
+        <mesh ref={leftArmRef} position={[-0.33, 0.84, 0]}>
+          <boxGeometry args={[0.14, 0.46, 0.14]} />
+          <meshLambertMaterial color={0x3a6a3a} />
+        </mesh>
+        <mesh ref={rightArmRef} position={[0.33, 0.84, 0]}>
+          <boxGeometry args={[0.14, 0.46, 0.14]} />
+          <meshLambertMaterial color={0x3a6a3a} />
+        </mesh>
+        <mesh ref={leftLegRef} position={[-0.14, 0.33, 0]}>
+          <boxGeometry args={[0.18, 0.6, 0.18]} />
+          <meshLambertMaterial color={0x2d4a1e} />
+        </mesh>
+        <mesh ref={rightLegRef} position={[0.14, 0.33, 0]}>
+          <boxGeometry args={[0.18, 0.6, 0.18]} />
+          <meshLambertMaterial color={0x2d4a1e} />
+        </mesh>
+        {/* Rifle */}
+        <mesh position={[0.32, 0.82, -0.3]} rotation={[0.6, 0, 0.05]}>
+          <boxGeometry args={[0.06, 0.06, 0.7]} />
+          <meshLambertMaterial color={0x3a2810} />
+        </mesh>
+        {/* Blood spots — local space, stay on body */}
+        <group ref={bloodGroupRef} />
+      </group>
+
+      {/* Bullets */}
+      <instancedMesh ref={bulletMeshRef} args={[undefined, undefined, 300]} frustumCulled={false}>
+        <sphereGeometry args={[1, 4, 3]} />
+        <meshBasicMaterial color={0xffee88} />
+      </instancedMesh>
+
+      {/* Effects */}
+      <instancedMesh ref={dirtMeshRef} args={[undefined, undefined, 200]} frustumCulled={false}>
+        <sphereGeometry args={[1, 4, 3]} />
+        <meshBasicMaterial color={0x7a5c3a} />
+      </instancedMesh>
+      <instancedMesh ref={bloodFxMeshRef} args={[undefined, undefined, 200]} frustumCulled={false}>
+        <sphereGeometry args={[1, 4, 3]} />
+        <meshBasicMaterial color={0xcc0022} />
+      </instancedMesh>
+      <instancedMesh ref={explosionFxMeshRef} args={[undefined, undefined, 200]} frustumCulled={false}>
+        <sphereGeometry args={[1, 4, 3]} />
+        <meshBasicMaterial color={0xff8833} />
+      </instancedMesh>
+    </>
+  );
+}
+
+// ── Obstacle meshes ───────────────────────────────────────────────────────────
+
+function ObstacleMesh({ obs }: { obs: Obstacle }) {
+  if (obs.kind === 'barbedWire') return null;
+
+  if (obs.kind === 'tankWreck') {
+    // Smaller, more realistic tank proportions
+    return (
+      <group position={[obs.pos.x, 0, obs.pos.z]} rotation={[0, obs.rotation, 0]}>
+        {/* Hull — lower and wider */}
+        <mesh position={[0, 0.55, 0]} castShadow>
+          <boxGeometry args={[obs.halfX * 1.8, 0.9, obs.halfZ * 1.6]} />
+          <meshLambertMaterial color={0x3a3020} />
+        </mesh>
+        {/* Track skirts */}
+        <mesh position={[0, 0.3, 0]}>
+          <boxGeometry args={[obs.halfX * 2.1, 0.35, obs.halfZ * 1.65]} />
+          <meshLambertMaterial color={0x2a2218} />
+        </mesh>
+        {/* Turret — smaller */}
+        <mesh position={[0, 1.15, -obs.halfZ * 0.1]}>
+          <boxGeometry args={[1.1, 0.55, 1.2]} />
+          <meshLambertMaterial color={0x32281a} />
+        </mesh>
+        {/* Turret top hatch */}
+        <mesh position={[0, 1.44, -obs.halfZ * 0.1]}>
+          <cylinderGeometry args={[0.28, 0.32, 0.12, 8]} />
+          <meshLambertMaterial color={0x222015} />
+        </mesh>
+        {/* Gun barrel */}
+        <mesh position={[0, 1.22, -obs.halfZ * 0.6 - 0.6]} rotation={[0.04, 0, 0]}>
+          <cylinderGeometry args={[0.07, 0.07, 1.6, 6]} />
+          <meshLambertMaterial color={0x1a1810} />
+        </mesh>
+        {/* Damage — bent barrel end */}
+        <mesh position={[0, 1.18, -obs.halfZ * 0.6 - 1.45]} rotation={[0.35, 0, 0]}>
+          <cylinderGeometry args={[0.08, 0.06, 0.4, 6]} />
+          <meshLambertMaterial color={0x1a1810} />
+        </mesh>
+      </group>
+    );
+  }
+
+  // Sandbags
+  const rows: JSX.Element[] = [];
+  for (let row = 0; row < 3; row++) {
+    const cols = row === 0 ? 4 : 3;
+    for (let col = 0; col < cols; col++) {
+      rows.push(
+        <mesh key={`${row}-${col}`}
+          position={[(col - (cols - 1) / 2) * 0.65, row * 0.38 + 0.2, (row % 2) * 0.12]}
+          castShadow
+        >
+          <boxGeometry args={[0.6, 0.36, 0.32]} />
+          <meshLambertMaterial color={0xa09060} />
+        </mesh>
+      );
+    }
+  }
+  return <group position={[obs.pos.x, 0, obs.pos.z]} rotation={[0, obs.rotation, 0]}>{rows}</group>;
+}
+
+// ── Barbed wire ───────────────────────────────────────────────────────────────
+
+function WireBand({ z, gapX, gapW }: { z: number; gapX: number; gapW: number }) {
+  const postCount  = Math.floor(FIELD_W / 4.5) + 1;
+  const gapEnd     = gapX + gapW;
+  const leftWidth  = gapX - (-FIELD_W / 2);
+  const rightWidth = FIELD_W / 2 - gapEnd;
+  const leftCX     = -FIELD_W / 2 + leftWidth / 2;
+  const rightCX    = gapEnd + rightWidth / 2;
+
+  return (
+    <group>
+      {/* Posts — omit any that fall inside the gap */}
+      {Array.from({ length: postCount }, (_, i) => {
+        const px = -FIELD_W / 2 + i * 4.5;
+        if (px >= gapX - 0.3 && px <= gapEnd + 0.3) return null;
+        return (
+          <mesh key={i} position={[px, 0.6, z]}>
+            <cylinderGeometry args={[0.05, 0.06, 1.2, 5]} />
+            <meshLambertMaterial color={0x6a5a40} />
+          </mesh>
+        );
+      })}
+
+      {/* Wire strands — left segment */}
+      {([0.5, 0.9, 1.15] as number[]).map((wy, si) => (
+        <mesh key={`l${si}`} position={[leftCX, wy, z]}>
+          <boxGeometry args={[leftWidth, 0.03, 0.03]} />
+          <meshLambertMaterial color={0x888880} />
+        </mesh>
+      ))}
+
+      {/* Wire strands — right segment */}
+      {([0.5, 0.9, 1.15] as number[]).map((wy, si) => (
+        <mesh key={`r${si}`} position={[rightCX, wy, z]}>
+          <boxGeometry args={[rightWidth, 0.03, 0.03]} />
+          <meshLambertMaterial color={0x888880} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+// ── HUD ───────────────────────────────────────────────────────────────────────
+
+function HUD({ state }: { state: WorldState }) {
+  const { player, distancePct, artilleryStatus, timer } = state;
+  const hp    = Math.max(0, player.health);
+  const hpCol = hp > 60 ? '#22c55e' : hp > 30 ? '#eab308' : '#ef4444';
+  const mins  = Math.floor(timer / 60);
+  const secs  = Math.floor(timer % 60).toString().padStart(2, '0');
+
+  return (
+    <div style={{
+      position: 'absolute', inset: 0, pointerEvents: 'none',
+      fontFamily: 'ui-monospace, monospace',
+      display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
+      padding: '18px 22px',
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+        <div style={chip}>{mins > 0 ? `${mins}:` : ''}{secs}</div>
+        <div style={{ ...chip, color: 'rgba(255,255,255,0.3)', fontSize: '0.67rem' }}>
+          WASD / Arrows · Shift sprint · C crawl
+        </div>
       </div>
+
+      {artilleryStatus.phase === 'warning' && (
+        <div style={{
+          position: 'absolute', top: 66, left: '50%', transform: 'translateX(-50%)',
+          background: 'rgba(180,0,0,0.7)', border: '1px solid #ff4444',
+          borderRadius: 10, padding: '8px 22px', color: '#fff',
+          fontSize: '0.85rem', fontWeight: 800, letterSpacing: '0.15em',
+          animation: 'artWarn 0.4s ease-in-out infinite alternate',
+        }}>
+          ⚠ INCOMING ⚠
+        </div>
+      )}
+
+      <div style={{ position: 'absolute', top: 64, left: 22, display: 'flex', flexDirection: 'column', gap: 5 }}>
+        {player.isCrawling && <Badge label="CRAWLING" color="#eab308" />}
+        {player.isSprinting && <Badge label="SPRINT"   color="#60a5fa" />}
+        {player.inCrater   && <Badge label="IN COVER" color="#4ade80" />}
+        {player.inWire     && <Badge label="WIRE"     color="#f87171" />}
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <Bar label={`ADVANCE — ${Math.round(distancePct * 100)}%`} pct={distancePct} color="#22c55e" h={6} />
+        <Bar label={`HP — ${Math.round(hp)} / ${player.maxHealth}`} pct={hp / player.maxHealth} color={hpCol} h={10} />
+      </div>
+    </div>
+  );
+}
+
+const chip: React.CSSProperties = {
+  background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.12)',
+  borderRadius: 8, padding: '6px 14px', color: 'rgba(255,255,255,0.75)',
+  fontSize: '0.9rem', fontWeight: 700, letterSpacing: '0.12em',
+};
+
+function Badge({ label, color }: { label: string; color: string }) {
+  return (
+    <div style={{
+      background: `${color}22`, border: `1px solid ${color}77`,
+      borderRadius: 6, padding: '3px 10px', color, fontSize: '0.7rem',
+      fontWeight: 700, letterSpacing: '0.12em',
+    }}>{label}</div>
+  );
+}
+
+function Bar({ label, pct, color, h }: { label: string; pct: number; color: string; h: number }) {
+  return (
+    <div>
+      <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: '0.65rem', letterSpacing: '0.15em', marginBottom: 4 }}>{label}</div>
+      <div style={{ height: h, background: 'rgba(255,255,255,0.1)', borderRadius: h / 2 }}>
+        <div style={{ height: '100%', borderRadius: h / 2, background: color, width: `${Math.max(0, pct) * 100}%`, transition: 'width 0.07s, background 0.2s' }} />
+      </div>
+    </div>
+  );
+}
+
+// ── End overlays ──────────────────────────────────────────────────────────────
+
+function EndCard({ bg, accent, title, sub, detail, btnLabel, onBtn }: {
+  bg: string; accent: string; title: string; sub: string; detail: string;
+  btnLabel: string; onBtn: () => void;
+}) {
+  return (
+    <div style={{
+      position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
+      alignItems: 'center', justifyContent: 'center',
+      background: bg, fontFamily: 'ui-monospace, monospace',
+    }}>
+      <div style={{ fontSize: '3.5rem', fontWeight: 900, color: accent, lineHeight: 1 }}>{title}</div>
+      <div style={{ fontSize: '1rem', color: 'rgba(255,255,255,0.4)', letterSpacing: '0.3em', marginTop: 6 }}>{sub}</div>
+      {detail && <div style={{ fontSize: '2.2rem', fontWeight: 800, color: '#fff', marginTop: 22 }}>{detail}</div>}
+      <button onClick={onBtn} style={{
+        marginTop: 28, padding: '12px 32px', borderRadius: 10,
+        border: `1px solid ${accent}`, background: `${accent}22`,
+        color: accent, fontFamily: 'inherit', fontSize: '0.9rem',
+        fontWeight: 700, letterSpacing: '0.12em', cursor: 'pointer',
+      }}>{btnLabel}</button>
+    </div>
+  );
+}
+
+// ── Main export ───────────────────────────────────────────────────────────────
+
+export default function GameScreen({ config, onResult }: Props) {
+  const simRef   = useRef<Simulation | null>(null);
+  const inputRef = useRef<InputCommands>({ dx: 0, dz: 0, crawl: false, sprint: false });
+  const [worldState, setWorldState] = useState<WorldState | null>(null);
+  const phaseRef = useRef('playing');
+
+  useEffect(() => {
+    simRef.current = new Simulation(config.roomCode);
+    setWorldState(simRef.current.getState());
+  }, [config.roomCode]);
+
+  useEffect(() => {
+    const keys = new Set<string>();
+    const sync = () => {
+      inputRef.current = {
+        dx: (keys.has('ArrowRight') || keys.has('KeyD') ? 1 : 0)
+          - (keys.has('ArrowLeft')  || keys.has('KeyA') ? 1 : 0),
+        dz: (keys.has('ArrowDown')  || keys.has('KeyS') ? 1 : 0)
+          - (keys.has('ArrowUp')    || keys.has('KeyW') ? 1 : 0),
+        crawl:  keys.has('KeyC'),
+        sprint: keys.has('ShiftLeft') || keys.has('ShiftRight'),
+      };
+    };
+    const dn = (e: KeyboardEvent) => { e.preventDefault(); keys.add(e.code); sync(); };
+    const up = (e: KeyboardEvent) => { keys.delete(e.code); sync(); };
+    window.addEventListener('keydown', dn);
+    window.addEventListener('keyup', up);
+    return () => { window.removeEventListener('keydown', dn); window.removeEventListener('keyup', up); };
+  }, []);
+
+  const handleStateUpdate = useCallback((state: WorldState) => {
+    if (state.phase !== phaseRef.current) phaseRef.current = state.phase;
+    setWorldState({ ...state });
+  }, []);
+
+  const handleDone = useCallback(() => {
+    const state = simRef.current?.getState();
+    onResult({
+      won: phaseRef.current === 'victory',
+      draw: false,
+      myTimeMs:       state ? state.timer * 1000 : null,
+      opponentTimeMs: null,
+      winnerName:     phaseRef.current === 'victory' ? config.playerName : 'Enemy',
+    });
+  }, [onResult, config.playerName]);
+
+  if (!simRef.current) return null;
+  const phase = worldState?.phase ?? 'playing';
+
+  return (
+    <div style={{ position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden', background: '#03030a' }}>
+      <Canvas
+        camera={{ fov: 62, near: 0.1, far: 220, position: [0, 4.8, START_Z + 11] }}
+        gl={{ antialias: true }}
+        style={{ position: 'absolute', inset: 0 }}
+      >
+        <Scene sim={simRef.current} inputRef={inputRef} onStateUpdate={handleStateUpdate} />
+      </Canvas>
+
+      {worldState && phase === 'playing' && <HUD state={worldState} />}
+
+      {phase === 'victory' && worldState && (
+        <EndCard bg="rgba(0,20,0,0.84)" accent="#22c55e" title="ACROSS"
+          sub="NO MAN'S LAND CROSSED"
+          detail={`${Math.floor(worldState.timer / 60) > 0 ? Math.floor(worldState.timer / 60) + 'm ' : ''}${(worldState.timer % 60).toFixed(2)}s`}
+          btnLabel="BACK TO LOBBY" onBtn={handleDone} />
+      )}
+      {phase === 'dead' && (
+        <EndCard bg="rgba(30,0,0,0.86)" accent="#ef4444" title="KIA"
+          sub="KILLED IN ACTION" detail="" btnLabel="TRY AGAIN" onBtn={handleDone} />
+      )}
+
+      <style>{`@keyframes artWarn { from{opacity:0.7} to{opacity:1} }`}</style>
     </div>
   );
 }

@@ -1,20 +1,23 @@
-export interface Vec2 { x: number; y: number; }
+export interface Vec3 { x: number; y: number; z: number; }
 
 export type GamePhase = 'playing' | 'victory' | 'dead';
 
 export interface PlayerState {
-  pos: Vec2;
+  pos: Vec3;
   health: number;
   maxHealth: number;
   isCrawling: boolean;
   isSprinting: boolean;
   inCrater: boolean;
   inWire: boolean;
+  hitFlash: number;  // seconds remaining for hit flash
 }
 
 export interface Tower {
   x: number;
-  aimX: number;
+  y: number;
+  z: number;
+  aimX: number;          // current aim X in world space
   targetAimX: number;
   aimTimer: number;
   fireTimer: number;
@@ -23,9 +26,9 @@ export interface Tower {
 }
 
 export interface Bullet {
-  pos: Vec2;
-  prev: Vec2;
-  vel: Vec2;
+  pos: Vec3;
+  prev: Vec3;
+  vel: Vec3;
   life: number;
   active: boolean;
 }
@@ -34,24 +37,24 @@ export type ObstacleKind = 'tankWreck' | 'sandbag' | 'barbedWire';
 
 export interface Obstacle {
   kind: ObstacleKind;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  rotation: number;
-  gapX?: number;
+  pos: Vec3;           // world-space centre
+  halfX: number;       // AABB half-extents
+  halfY: number;
+  halfZ: number;
+  rotation: number;    // visual Y-rotation only
+  gapX?: number;       // barbedWire: left edge of gap in world X
   gapW?: number;
 }
 
 export interface Crater {
   x: number;
-  y: number;
+  z: number;
   r: number;
 }
 
 export interface ArtilleryStrike {
   x: number;
-  y: number;
+  z: number;
   detonateAt: number;
   warnDuration: number;
 }
@@ -59,17 +62,15 @@ export interface ArtilleryStrike {
 export interface ArtilleryStatus {
   phase: 'none' | 'warning' | 'blast';
   x: number;
-  y: number;
+  z: number;
   progress: number;
   blastRadius: number;
 }
 
 export interface Effect {
-  type: 'dirt' | 'smoke' | 'flash' | 'blood';
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
+  type: 'dirt' | 'blood' | 'explosion';
+  x: number; y: number; z: number;
+  vx: number; vy: number; vz: number;
   life: number;
   maxLife: number;
   size: number;
@@ -85,13 +86,12 @@ export interface WorldState {
   artillerySchedule: ArtilleryStrike[];
   artilleryStatus: ArtilleryStatus;
   effects: Effect[];
-  cameraY: number;
   distancePct: number;
 }
 
 export interface InputCommands {
-  dx: number;
-  dy: number;
+  dx: number;   // –1 left, +1 right
+  dz: number;   // –1 forward (toward bunker), +1 backward
   crawl: boolean;
   sprint: boolean;
 }
