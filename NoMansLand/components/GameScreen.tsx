@@ -4,6 +4,8 @@ import * as THREE from 'three';
 import { Socket } from 'socket.io-client';
 import { GameConfig, ResultData, InputCommands, WorldState, Obstacle } from '../types';
 import { Simulation } from '../engine/Simulation';
+import { NmlSounds } from '../services/sounds';
+import MuteButton from './MuteButton';
 import {
   FIELD_W, FIELD_D, BUNKER_H, TOWER_Y, TOWER_Z, TOWER_COUNT,
   FINISH_Z, START_Z, WIRE_BAND_ZS, ARTILLERY_BLAST_RADIUS,
@@ -54,11 +56,14 @@ function Scene({ sim, inputRef, onStateUpdate }: SceneProps) {
   const artRingRef  = useRef<THREE.Mesh>(null);
   const artBlastRef = useRef<THREE.Mesh>(null);
 
-  const bloodSpotsRef   = useRef<BloodSpot[]>([]);
-  const walkPhaseRef    = useRef(0);
-  const prevFlashRef    = useRef(0);
-  const accRef          = useRef(0);
-  const prevCraterCount = useRef(0);
+  const bloodSpotsRef      = useRef<BloodSpot[]>([]);
+  const walkPhaseRef       = useRef(0);
+  const prevFlashRef       = useRef(0);
+  const accRef             = useRef(0);
+  const prevCraterCount    = useRef(0);
+  const prevActiveBullets  = useRef(0);
+  const lastShootSound     = useRef(0);
+  const prevArtPhase       = useRef<string>('none');
   const FIXED_DT        = 1 / 60;
   const dummy           = useMemo(() => new THREE.Object3D(), []);
 
@@ -129,11 +134,27 @@ function Scene({ sim, inputRef, onStateUpdate }: SceneProps) {
     if (bodyRef.current)  bodyRef.current.position.y  = 0.85 + bodyBob;
     if (headRef.current)  headRef.current.position.y  = 1.30 + bodyBob;
 
+    // ── Sounds ───────────────────────────────────────────────────────────────
+    const activeBullets = state.bullets.filter(b => b.active).length;
+    if (activeBullets > prevActiveBullets.current) {
+      const now = performance.now();
+      if (now - lastShootSound.current > 130) { NmlSounds.shoot(); lastShootSound.current = now; }
+    }
+    prevActiveBullets.current = activeBullets;
+
+    if (state.artilleryStatus.phase !== prevArtPhase.current) {
+      if (state.artilleryStatus.phase === 'warning') NmlSounds.artWarning();
+      if (state.artilleryStatus.phase === 'blast')   NmlSounds.explosion();
+      prevArtPhase.current = state.artilleryStatus.phase;
+    }
+
     // ── Hit flash ─────────────────────────────────────────────────────────────
     const flashing = p.hitFlash > 0;
     if (flashing !== (prevFlashRef.current > 0)) {
       if (bodyRef.current) (bodyRef.current.material as THREE.MeshLambertMaterial).color.setHex(flashing ? 0xff2222 : 0x3a6a3a);
       if (headRef.current) (headRef.current.material as THREE.MeshLambertMaterial).color.setHex(flashing ? 0xff4444 : 0xd4a88a);
+
+      if (flashing) NmlSounds.hit();
 
       // Spawn blood spots on rising edge
       if (flashing) {
@@ -702,6 +723,11 @@ export default function GameScreen({ config, onResult }: Props) {
     setWorldState({ ...state });
   }, []);
 
+  useEffect(() => {
+    if (phase === 'victory') NmlSounds.win();
+    if (phase === 'dead')    NmlSounds.die();
+  }, [phase]);
+
   const handleDone = useCallback(() => {
     const state = simRef.current?.getState();
     onResult({
@@ -727,6 +753,11 @@ export default function GameScreen({ config, onResult }: Props) {
       </Canvas>
 
       {worldState && phase === 'playing' && <HUD state={worldState} />}
+
+      {/* Mute button — always visible during gameplay */}
+      <div style={{ position: 'absolute', top: 14, right: 14, zIndex: 999 }}>
+        <MuteButton />
+      </div>
 
       {phase === 'victory' && worldState && (
         <EndCard bg="rgba(0,20,0,0.84)" accent="#22c55e" title="ACROSS"
