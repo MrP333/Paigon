@@ -676,23 +676,26 @@ function EndCard({ bg, accent, title, sub, detail, btnLabel, onBtn }: {
       <div style={{ fontSize: '3.5rem', fontWeight: 900, color: accent, lineHeight: 1 }}>{title}</div>
       <div style={{ fontSize: '1rem', color: 'rgba(255,255,255,0.4)', letterSpacing: '0.3em', marginTop: 6 }}>{sub}</div>
       {detail && <div style={{ fontSize: '2.2rem', fontWeight: 800, color: '#fff', marginTop: 22 }}>{detail}</div>}
-      <button onClick={onBtn} style={{
-        marginTop: 28, padding: '12px 32px', borderRadius: 10,
-        border: `1px solid ${accent}`, background: `${accent}22`,
-        color: accent, fontFamily: 'inherit', fontSize: '0.9rem',
-        fontWeight: 700, letterSpacing: '0.12em', cursor: 'pointer',
-      }}>{btnLabel}</button>
+      {btnLabel && (
+        <button onClick={onBtn} style={{
+          marginTop: 28, padding: '12px 32px', borderRadius: 10,
+          border: `1px solid ${accent}`, background: `${accent}22`,
+          color: accent, fontFamily: 'inherit', fontSize: '0.9rem',
+          fontWeight: 700, letterSpacing: '0.12em', cursor: 'pointer',
+        }}>{btnLabel}</button>
+      )}
     </div>
   );
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
-export default function GameScreen({ config, onResult }: Props) {
+export default function GameScreen({ config, socket, onResult }: Props) {
   const simRef   = useRef<Simulation | null>(null);
   const inputRef = useRef<InputCommands>({ dx: 0, dz: 0, crawl: false, sprint: false });
   const [worldState, setWorldState] = useState<WorldState | null>(null);
   const phaseRef = useRef('playing');
+  const emittedRef = useRef(false);
 
   useEffect(() => {
     simRef.current = new Simulation(config.roomCode);
@@ -723,12 +726,46 @@ export default function GameScreen({ config, onResult }: Props) {
     setWorldState({ ...state });
   }, []);
 
+  const phase = worldState?.phase ?? 'playing';
+
   useEffect(() => {
-    if (phase === 'victory') NmlSounds.win();
-    if (phase === 'dead')    NmlSounds.die();
-  }, [phase]);
+    if (phase === 'victory') {
+      NmlSounds.win();
+      if (!config.solo && config.roomCode && !emittedRef.current) {
+        emittedRef.current = true;
+        const timeMs = simRef.current ? simRef.current.getState().timer * 1000 : 0;
+        socket.emit('nml:crossed', { roomCode: config.roomCode, timeMs });
+      }
+    }
+    if (phase === 'dead') {
+      NmlSounds.die();
+      if (!config.solo && config.roomCode && !emittedRef.current) {
+        emittedRef.current = true;
+        socket.emit('nml:died', { roomCode: config.roomCode });
+      }
+    }
+  }, [phase, config.solo, config.roomCode, socket]);
+
+  // Listen for server result in multiplayer
+  useEffect(() => {
+    if (config.solo) return;
+    const handler = (data: { winnerId: string | null; winnerName: string; draw: boolean; myTimeMs: number | null; opponentTimeMs: number | null; payoutCents?: number; entryCents?: number }) => {
+      onResult({
+        won: data.winnerId !== null && !data.draw && data.myTimeMs !== null && (data.opponentTimeMs === null || data.myTimeMs <= data.opponentTimeMs),
+        draw: data.draw,
+        myTimeMs: data.myTimeMs,
+        opponentTimeMs: data.opponentTimeMs,
+        winnerName: data.winnerName,
+        payoutCents: data.payoutCents,
+        entryCents: data.entryCents,
+      });
+    };
+    socket.on('nml:result', handler);
+    return () => { socket.off('nml:result', handler); };
+  }, [config.solo, socket, onResult]);
 
   const handleDone = useCallback(() => {
+    if (!config.solo) return; // multiplayer result comes from socket
     const state = simRef.current?.getState();
     onResult({
       won: phaseRef.current === 'victory',
@@ -737,10 +774,9 @@ export default function GameScreen({ config, onResult }: Props) {
       opponentTimeMs: null,
       winnerName:     phaseRef.current === 'victory' ? config.playerName : 'Enemy',
     });
-  }, [onResult, config.playerName]);
+  }, [onResult, config.playerName, config.solo]);
 
   if (!simRef.current) return null;
-  const phase = worldState?.phase ?? 'playing';
 
   return (
     <div style={{ position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden', background: '#03030a' }}>
@@ -761,13 +797,13 @@ export default function GameScreen({ config, onResult }: Props) {
 
       {phase === 'victory' && worldState && (
         <EndCard bg="rgba(0,20,0,0.84)" accent="#22c55e" title="ACROSS"
-          sub="NO MAN'S LAND CROSSED"
+          sub={config.solo ? 'NO MAN\'S LAND CROSSED' : 'WAITING FOR OPPONENT…'}
           detail={`${Math.floor(worldState.timer / 60) > 0 ? Math.floor(worldState.timer / 60) + 'm ' : ''}${(worldState.timer % 60).toFixed(2)}s`}
-          btnLabel="BACK TO LOBBY" onBtn={handleDone} />
+          btnLabel={config.solo ? 'BACK TO LOBBY' : ''} onBtn={handleDone} />
       )}
       {phase === 'dead' && (
         <EndCard bg="rgba(30,0,0,0.86)" accent="#ef4444" title="KIA"
-          sub="KILLED IN ACTION" detail="" btnLabel="TRY AGAIN" onBtn={handleDone} />
+          sub={config.solo ? 'KILLED IN ACTION' : 'WAITING FOR RESULT…'} detail="" btnLabel={config.solo ? 'TRY AGAIN' : ''} onBtn={handleDone} />
       )}
 
       <style>{`@keyframes artWarn { from{opacity:0.7} to{opacity:1} }`}</style>

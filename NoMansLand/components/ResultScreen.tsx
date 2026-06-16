@@ -4,6 +4,7 @@ interface Props {
   result: ResultData;
   playerName: string;
   solo: boolean;
+  stakeId: string;
   onPlayAgain: () => void;
 }
 
@@ -12,8 +13,14 @@ function fmt(ms: number | null) {
   return (ms / 1000).toFixed(2) + 's';
 }
 
-export default function ResultScreen({ result, playerName, solo, onPlayAgain }: Props) {
-  const { won, draw, myTimeMs, opponentTimeMs, winnerName } = result;
+function pcLabel(cents: number) {
+  const pc = cents / 10;
+  return (Number.isInteger(pc) ? pc.toString() : pc.toFixed(1)) + ' PC';
+}
+
+export default function ResultScreen({ result, playerName, solo, stakeId, onPlayAgain }: Props) {
+  const { won, draw, myTimeMs, opponentTimeMs, winnerName, payoutCents, entryCents } = result;
+  const isPaid = stakeId && stakeId !== 'free' && (entryCents ?? 0) > 0;
 
   let headline: string;
   let headlineColor: string;
@@ -64,9 +71,37 @@ export default function ResultScreen({ result, playerName, solo, onPlayAgain }: 
       }}>
         {headline}
       </div>
-      <div style={{ fontSize: '0.82rem', color: 'rgba(255,255,255,0.35)', marginBottom: 36 }}>
+      <div style={{ fontSize: '0.82rem', color: 'rgba(255,255,255,0.35)', marginBottom: 28 }}>
         {sub}
       </div>
+
+      {/* Payout card — only for paid matches */}
+      {isPaid && !solo && (
+        <div style={{
+          marginBottom: 24, padding: '14px 28px', borderRadius: 12,
+          border: won ? '1px solid rgba(0,255,136,0.25)' : '1px solid rgba(255,255,255,0.08)',
+          background: won ? 'rgba(0,255,136,0.07)' : 'rgba(255,255,255,0.03)',
+          display: 'flex', gap: 32, textAlign: 'center',
+        }}>
+          {won && payoutCents ? (
+            <div>
+              <div style={{ fontSize: '0.58rem', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.3)', marginBottom: 4 }}>Won</div>
+              <div style={{ fontSize: '1.5rem', fontWeight: 900, color: '#00ff88' }}>+{pcLabel(payoutCents)}</div>
+            </div>
+          ) : (
+            <div>
+              <div style={{ fontSize: '0.58rem', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.3)', marginBottom: 4 }}>Lost</div>
+              <div style={{ fontSize: '1.5rem', fontWeight: 900, color: '#ff3333' }}>-{pcLabel(entryCents ?? 0)}</div>
+            </div>
+          )}
+          {entryCents ? (
+            <div>
+              <div style={{ fontSize: '0.58rem', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.3)', marginBottom: 4 }}>Staked</div>
+              <div style={{ fontSize: '1.5rem', fontWeight: 900, color: 'rgba(255,255,255,0.5)' }}>{pcLabel(entryCents)}</div>
+            </div>
+          ) : null}
+        </div>
+      )}
 
       {/* Time cards */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 36 }}>
@@ -84,7 +119,7 @@ export default function ResultScreen({ result, playerName, solo, onPlayAgain }: 
 
         {!solo && (
           <div style={{
-            background: 'rgba(255,255,255,0.03)', border: 'rgba(255,255,255,0.07) 1px solid',
+            background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)',
             borderRadius: 12, padding: '18px 28px', textAlign: 'center', minWidth: 120,
           }}>
             <div style={{ fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.3)', marginBottom: 8 }}>

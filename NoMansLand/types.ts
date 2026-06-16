@@ -113,4 +113,6 @@ export interface ResultData {
   myTimeMs: number | null;
   opponentTimeMs: number | null;
   winnerName: string;
+  payoutCents?: number;
+  entryCents?: number;
 }
