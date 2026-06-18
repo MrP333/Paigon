@@ -1,20 +1,95 @@
 import { useState, useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
+import { onAuthStateChanged, User } from 'firebase/auth';
+import { doc, getDoc, setDoc, addDoc, collection, serverTimestamp } from 'firebase/firestore';
+import { auth, db } from './services/firebase';
 import HomeScreen from './components/HomeScreen';
 import WaitingScreen from './components/WaitingScreen';
 import GameScreen from './components/GameScreen';
+import TrialScreen from './components/TrialScreen';
 import ResultScreen from './components/ResultScreen';
+import DepositModal from './components/DepositModal';
 import { GameConfig, ResultData } from './types';
 
 const SERVER_URL = 'https://mazergame11-production.up.railway.app';
 
+const DAILY_CHALLENGES = [
+  { label: 'Win any competitive match', target: 1, reward: 10 },
+  { label: 'Win 2 competitive matches', target: 2, reward: 20 },
+  { label: 'Win any competitive match', target: 1, reward: 10 },
+  { label: 'Win 3 competitive matches', target: 3, reward: 30 },
+  { label: 'Win 2 competitive matches', target: 2, reward: 20 },
+];
+
+function getDailyChallenge() {
+  const d = new Date();
+  const start = new Date(d.getFullYear(), 0, 0);
+  const dayOfYear = Math.floor((d.getTime() - start.getTime()) / 86400000);
+  return DAILY_CHALLENGES[dayOfYear % DAILY_CHALLENGES.length];
+}
+
 export default function App() {
-  const [screen, setScreen] = useState<'home' | 'waiting' | 'game' | 'result'>('home');
-  const [playerName, setPlayerName] = useState('');
-  const [playerColor, setPlayerColor] = useState('#22d3ee');
+  const [screen, setScreen] = useState<'home' | 'waiting' | 'game' | 'trial' | 'result'>('home');
   const [gameConfig, setGameConfig] = useState<GameConfig | null>(null);
   const [resultData, setResultData] = useState<ResultData | null>(null);
   const socketRef = useRef<Socket | null>(null);
+
+  // Firebase auth + user data
+  const [firebaseUser, setFirebaseUser] = useState<User | null | undefined>(undefined);
+  const [showDeposit, setShowDeposit] = useState(false);
+  const [playerName, setPlayerName] = useState('');
+  const [playerColor, setPlayerColor] = useState('#22d3ee');
+  const [balance, setBalance] = useState(0); // balanceCents
+  const [trialComplete, setTrialComplete] = useState(false);
+  const [isDev, setIsDev] = useState(false);
+  const [soloRunsToday, setSoloRunsToday] = useState(0);
+  const [elo, setElo]               = useState(1000);
+  const [winStreak, setWinStreak]   = useState(0);
+  const [lossStreak, setLossStreak] = useState(0);
+  const [challengeProgress, setChallengeProgress] = useState(0);
+  const [challengeClaimed, setChallengeClaimed]   = useState(false);
+
+  const SOLO_DAILY_LIMIT = 5;
+
+  // Firebase auth listener
+  useEffect(() => {
+    return onAuthStateChanged(auth, async (user) => {
+      setFirebaseUser(user);
+      if (!user) return;
+      const snap = await getDoc(doc(db, 'users', user.uid));
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data.username) setPlayerName(data.username);
+        if (data.color)    setPlayerColor(data.color);
+        setBalance(data.balanceCents ?? 0);
+        if (data.trialCompleted) setTrialComplete(true);
+        if (data.isDev) setIsDev(true);
+        const today = new Date().toISOString().slice(0, 10);
+        if (data.soloRunsDate === today) setSoloRunsToday(data.soloRunsToday ?? 0);
+        setElo(data.elo ?? 1000);
+        setWinStreak(data.winStreak ?? 0);
+        setLossStreak(data.lossStreak ?? 0);
+        if (data.dailyChallengeDate === today) {
+          setChallengeProgress(data.dailyChallengeProgress ?? 0);
+          setChallengeClaimed(data.dailyChallengeClaimed ?? false);
+        }
+      } else {
+        setPlayerName(user.email?.split('@')[0] ?? '');
+      }
+    });
+  }, []);
+
+  async function consumeSoloRun(): Promise<boolean> {
+    if (isDev) return true;
+    if (!firebaseUser) return true; // unauthenticated users can practice freely
+    const today = new Date().toISOString().slice(0, 10);
+    const currentCount = soloRunsToday;
+    if (currentCount >= SOLO_DAILY_LIMIT) return false;
+    const next = currentCount + 1;
+    setSoloRunsToday(next);
+    setDoc(doc(db, 'users', firebaseUser.uid), { soloRunsDate: today, soloRunsToday: next }, { merge: true }).catch(console.error);
+    return true;
+  }
 
   function getSocket() {
     if (!socketRef.current) {
@@ -27,37 +102,82 @@ export default function App() {
     const sock = getSocket();
 
     sock.on('reflex:matched', (data: any) => {
-      setGameConfig({
+      setGameConfig(prev => prev ? {
+        ...prev,
         roomCode: data.roomCode,
-        playerName,
-        playerColor,
         opponentName: data.opponentName,
         opponentColor: data.opponentColor,
-        stakeId: data.stakeId || 'free',
         payoutCents: data.payoutCents || 0,
-      });
+      } : null);
       setScreen('game');
+    });
+
+    sock.on('balance:update', ({ delta }: { delta: number }) => {
+      setBalance(b => b + delta);
     });
 
     sock.on('connect_error', () => console.warn('[reflex] socket connect error'));
 
     return () => {
       sock.off('reflex:matched');
+      sock.off('balance:update');
     };
-  }, [playerName, playerColor]);
+  }, []);
 
-  function handlePlay(name: string, color: string) {
+  function resolveName() {
+    return playerName.trim() || `PLAYER-${Math.floor(Math.random() * 9000) + 1000}`;
+  }
+
+  function handleBotTrial() {
+    setScreen('trial');
+  }
+
+  function handleTrialComplete() {
+    setTrialComplete(true);
+    if (firebaseUser) {
+      setDoc(doc(db, 'users', firebaseUser.uid), { trialCompleted: true }, { merge: true }).catch(console.error);
+    }
+    setScreen('home');
+  }
+
+  async function handleQueue(stakeId: string, name: string, color: string) {
     setPlayerName(name);
     setPlayerColor(color);
     const sock = getSocket();
-    sock.emit('reflex:queue', { name, color, stakeId: 'free' });
+    let idToken: string | null = null;
+    if (firebaseUser) {
+      try { idToken = await firebaseUser.getIdToken(); } catch { /* no-op */ }
+    }
+    sock.emit('reflex:queue', { name, color, stakeId, idToken }, (res: any) => {
+      if (res && !res.ok) {
+        if (res.error === 'insufficient_balance') {
+          alert('Not enough PC for this tier. Add PC from your account page.');
+        } else if (res.error === 'auth_required') {
+          alert('Please log in to play paid lobbies.');
+        }
+        setScreen('home');
+      }
+    });
+    setGameConfig({
+      roomCode: '',
+      playerName: name,
+      playerColor: color,
+      opponentName: '',
+      opponentColor: '#fb923c',
+      stakeId,
+      payoutCents: 0,
+    });
     setScreen('waiting');
   }
 
-  function handleSolo(name: string, color: string) {
+  async function handleSolo(name: string, color: string) {
+    const allowed = await consumeSoloRun();
+    if (!allowed) {
+      alert(`You've used all ${SOLO_DAILY_LIMIT} solo practice runs for today. Come back tomorrow, or play a free competitive match!`);
+      return;
+    }
     setPlayerName(name);
     setPlayerColor(color);
-    // Generate a random room code — seeds the target sequence without needing a server
     const code = Math.random().toString(36).slice(2, 7).toUpperCase();
     setGameConfig({
       roomCode: code,
@@ -80,6 +200,60 @@ export default function App() {
   function handleResult(result: ResultData) {
     setResultData(result);
     setScreen('result');
+    if (firebaseUser && !gameConfig?.solo) {
+      const K = 32;
+      const oppElo = 1000;
+      const expected = 1 / (1 + Math.pow(10, (oppElo - elo) / 400));
+      const score = result.won ? 1 : 0;
+      const newElo  = Math.max(100, Math.round(elo + K * (score - expected)));
+      const newWin  = result.won ? winStreak + 1 : 0;
+      const newLoss = !result.won ? lossStreak + 1 : 0;
+      setElo(newElo);
+      setWinStreak(newWin);
+      setLossStreak(newLoss);
+      setDoc(doc(db, 'users', firebaseUser.uid), {
+        elo: newElo, winStreak: newWin, lossStreak: newLoss,
+      }, { merge: true }).catch(console.error);
+
+      if (result.won) {
+        const today = new Date().toISOString().slice(0, 10);
+        const newProgress = challengeProgress + 1;
+        setChallengeProgress(newProgress);
+        setDoc(doc(db, 'users', firebaseUser.uid), {
+          dailyChallengeProgress: newProgress,
+          dailyChallengeDate: today,
+          dailyChallengeClaimed: challengeClaimed,
+        }, { merge: true }).catch(console.error);
+
+        addDoc(collection(db, 'recentActivity'), {
+          game: 'REFLEX',
+          winner: playerName,
+          winnerColor: playerColor,
+          loser: gameConfig?.opponentName ?? 'Opponent',
+          stakeId: gameConfig?.stakeId ?? 'free',
+          payoutCents: gameConfig?.payoutCents ?? 0,
+          createdAt: serverTimestamp(),
+        }).catch(console.error);
+      }
+    }
+  }
+
+  async function handleClaimChallenge() {
+    if (!firebaseUser || challengeClaimed) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const challenge = getDailyChallenge();
+    const rewardCents = challenge.reward * 10;
+    try {
+      await setDoc(doc(db, 'users', firebaseUser.uid), {
+        balanceCents: balance + rewardCents,
+        dailyChallengeClaimed: true,
+        dailyChallengeDate: today,
+      }, { merge: true });
+      setBalance(b => b + rewardCents);
+      setChallengeClaimed(true);
+    } catch (e) {
+      console.error('Challenge claim failed:', e);
+    }
   }
 
   function handlePlayAgain() {
@@ -88,15 +262,67 @@ export default function App() {
     setScreen('home');
   }
 
+  // Still loading auth state
+  if (firebaseUser === undefined) {
+    return (
+      <div style={{ width: '100vw', height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#03030a' }}>
+        <div style={{ width: 36, height: 36, borderRadius: '50%', border: '3px solid rgba(34,211,238,0.2)', borderTopColor: '#22d3ee', animation: 'spin 0.8s linear infinite' }} />
+        <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+      </div>
+    );
+  }
+
   return (
     <div style={{ width: '100vw', height: '100vh', background: '#03030a', fontFamily: "'Space Grotesk', sans-serif", overflow: 'hidden' }}>
-      {screen === 'home'    && <HomeScreen onPlay={handlePlay} onSolo={handleSolo} />}
+      {screen === 'home' && (
+        <HomeScreen
+          onQueue={handleQueue}
+          onSolo={handleSolo}
+          onBotTrial={handleBotTrial}
+          trialComplete={trialComplete}
+          playerName={playerName}
+          playerColor={playerColor}
+          balance={balance}
+          isLoggedIn={!!firebaseUser}
+          soloRunsToday={firebaseUser ? soloRunsToday : undefined}
+          isDev={isDev}
+          elo={firebaseUser ? elo : undefined}
+          winStreak={winStreak}
+          lossStreak={lossStreak}
+          challenge={firebaseUser ? getDailyChallenge() : undefined}
+          challengeProgress={challengeProgress}
+          challengeClaimed={challengeClaimed}
+          onClaimChallenge={handleClaimChallenge}
+        />
+      )}
       {screen === 'waiting' && <WaitingScreen onLeave={handleLeave} />}
-      {screen === 'game'    && gameConfig && (
+      {screen === 'trial' && (
+        <TrialScreen
+          playerName={resolveName()}
+          playerColor={playerColor}
+          onComplete={handleTrialComplete}
+          onBack={() => setScreen('home')}
+        />
+      )}
+      {screen === 'game' && gameConfig && (
         <GameScreen config={gameConfig} socket={getSocket()} onResult={handleResult} />
       )}
-      {screen === 'result'  && resultData && (
-        <ResultScreen result={resultData} onPlayAgain={handlePlayAgain} solo={gameConfig?.solo} />
+      {screen === 'result' && resultData && (
+        <ResultScreen
+          result={resultData}
+          onPlayAgain={handlePlayAgain}
+          solo={gameConfig?.solo}
+        />
+      )}
+
+      {showDeposit && firebaseUser && (
+        <DepositModal
+          user={firebaseUser}
+          onClose={() => setShowDeposit(false)}
+          onSuccess={(creditCents) => {
+            if (creditCents > 0) setBalance(b => b + creditCents);
+          }}
+        />
       )}
     </div>
   );
