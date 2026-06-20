@@ -135,9 +135,9 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
   return (
     <div style={{
       width: '100%', height: '100%',
-      display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
       background: '#03030a',
-      position: 'relative', overflowY: 'auto',
+      position: 'relative', overflow: 'hidden',
       padding: '12px 16px',
       boxSizing: 'border-box',
     }}>
