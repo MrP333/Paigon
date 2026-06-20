@@ -3,22 +3,23 @@ import { Socket } from 'socket.io-client';
 import { GameConfig, ResultData, Target, HitRecord, CanvasEffect } from '../types';
 
 // ── Constants ────────────────────────────────────────────────────────────────
-const CW = 900;
-const CH = 540;
-const NUM_TARGETS = 150;
+const CW               = 900;
+const CH               = 540;
+const NUM_TARGETS      = 150;
 const GAME_DURATION_MS = 30000;
-const TARGET_R = 30;
-const DECOY_R = 26;
-const CHARGE_MS = 120;
-const TIME_LIMIT_MS = 1200;
-const DELAY_EXPAND_MS = 900;
-const DELAY_CLICK_MS = 1400;
+const TARGET_R         = 32;
+const DECOY_R          = 26;
+const CHARGE_MS        = 100;
+const TIME_LIMIT_MS    = 1400;
 const TIMEOUT_PENALTY_MS = 800;
-const DECOY_PENALTY_MS = 600;
-const EARLY_PENALTY_MS = 700;
-const DELAY_GATE_R = TARGET_R * 2.8;
+const DECOY_PENALTY_MS   = 600;
+const HIT_TOLERANCE      = TARGET_R + 16;
 
-type TargetKind = 'approach' | 'delay';
+// Four neon colors that cycle per target index
+const NEON_COLORS = ['#22d3ee', '#a855f7', '#ec4899', '#10b981'];
+function getTargetColor(index: number): string {
+  return NEON_COLORS[index % NEON_COLORS.length];
+}
 
 interface Floater { x: number; y: number; startTime: number; color: string; }
 
@@ -38,7 +39,7 @@ function hashCode(s: string): number {
   return h >>> 0;
 }
 
-// ── Streak color ramp ─────────────────────────────────────────────────────────
+// ── Streak color ──────────────────────────────────────────────────────────────
 function streakColor(streak: number): string {
   if (streak >= 10) return '#ffd700';
   if (streak >= 6)  return '#a855f7';
@@ -63,15 +64,6 @@ function generateTargets(roomCode: string): Target[] {
   return targets;
 }
 
-function generateKinds(roomCode: string): TargetKind[] {
-  const rng = mulberry32(hashCode(roomCode + ':kinds'));
-  return Array.from({ length: NUM_TARGETS }, (_, i) => {
-    if (i < 3) return 'approach';
-    const delayChance = i < 6 ? 0.25 : 0.45;
-    return rng() < delayChance ? 'delay' : 'approach';
-  });
-}
-
 interface Decoy { x: number; y: number; }
 
 function generateDecoys(roomCode: string, targets: Target[]): Decoy[][] {
@@ -79,7 +71,7 @@ function generateDecoys(roomCode: string, targets: Target[]): Decoy[][] {
   const PAD = 80;
   return targets.map((t, i) => {
     if (i < 2) return [];
-    const count = i < 5 ? 1 : (rng() < 0.6 ? 2 : 1);
+    const count = i < 5 ? 1 : (rng() < 0.55 ? 1 : 0);
     const decoys: Decoy[] = [];
     for (let d = 0; d < count; d++) {
       let x = 0, y = 0, tries = 0;
@@ -97,15 +89,14 @@ function generateDecoys(roomCode: string, targets: Target[]): Decoy[][] {
   });
 }
 
-// ── Drawing ───────────────────────────────────────────────────────────────────
+// ── Background ────────────────────────────────────────────────────────────────
 function drawBackground(ctx: CanvasRenderingContext2D, timeLeft: number, hitCount: number) {
-  const pulse = 0.5 + 0.5 * Math.sin(Date.now() * 0.0015);
-  const danger = timeLeft <= 5;
+  const pulse   = 0.5 + 0.5 * Math.sin(Date.now() * 0.0015);
+  const danger  = timeLeft <= 5;
 
   ctx.fillStyle = '#03030a';
   ctx.fillRect(0, 0, CW, CH);
 
-  // Center radial glow — builds with hit count, shifts red when danger
   const glowIntensity = Math.min(0.03 + hitCount * 0.004, 0.16) + 0.03 * pulse;
   const grad = ctx.createRadialGradient(CW / 2, CH / 2, 0, CW / 2, CH / 2, CW * 0.55);
   grad.addColorStop(0, danger ? `rgba(239,68,68,${glowIntensity})` : `rgba(34,211,238,${glowIntensity})`);
@@ -113,7 +104,6 @@ function drawBackground(ctx: CanvasRenderingContext2D, timeLeft: number, hitCoun
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, CW, CH);
 
-  // Grid dots
   ctx.fillStyle = danger ? 'rgba(239,68,68,0.2)' : 'rgba(34,211,238,0.13)';
   for (let x = 36; x < CW; x += 36) {
     for (let y = 36; y < CH; y += 36) {
@@ -121,7 +111,6 @@ function drawBackground(ctx: CanvasRenderingContext2D, timeLeft: number, hitCoun
     }
   }
 
-  // Red edge vignette when danger
   if (danger) {
     const vigAlpha = 0.07 + 0.10 * pulse;
     const vgrad = ctx.createRadialGradient(CW / 2, CH / 2, CH * 0.22, CW / 2, CH / 2, CW * 0.72);
@@ -132,29 +121,38 @@ function drawBackground(ctx: CanvasRenderingContext2D, timeLeft: number, hitCoun
   }
 }
 
-function drawApproachTarget(ctx: CanvasRenderingContext2D, t: Target, elapsed: number, streak: number) {
+// ── Target (OSU-style approach ring + numbered circle) ────────────────────────
+function drawTarget(
+  ctx: CanvasRenderingContext2D,
+  t: Target,
+  elapsed: number,
+  streak: number,
+  color: string,
+  hitNumber: number,
+) {
   const { x, y } = t;
-  const TOTAL = CHARGE_MS + TIME_LIMIT_MS;
-  const approachProgress = Math.min(elapsed / TOTAL, 1);
-  const easedProgress = approachProgress * approachProgress;
-  const approachR = TARGET_R + (TARGET_R * 2.6) * (1 - easedProgress);
-  const isDanger = approachProgress > 0.65;
+  const TOTAL          = CHARGE_MS + TIME_LIMIT_MS;
+  const approachProg   = Math.min(elapsed / TOTAL, 1);
+  const easedProg      = approachProg * approachProg;
+  const approachR      = TARGET_R + (TARGET_R * 2.8) * (1 - easedProg);
   const chargeProgress = Math.min(elapsed / CHARGE_MS, 1);
-  const isClickable = elapsed >= CHARGE_MS;
-  const pulse = 0.5 + 0.5 * Math.sin(Date.now() * 0.004);
-  const color = isClickable ? streakColor(streak) : '#22d3ee';
-  const glowBoost = Math.min(streak * 0.018, 0.14);
+  const isClickable    = elapsed >= CHARGE_MS;
+  const isDanger       = approachProg > 0.72;
+  const pulse          = 0.5 + 0.5 * Math.sin(Date.now() * 0.004);
+  const glowBoost      = Math.min(streak * 0.018, 0.14);
+  const activeColor    = isClickable ? (streak >= 3 ? streakColor(streak) : color) : color;
+  const ringColor      = isDanger ? '#ff6b6b' : activeColor;
 
-  // Approach ring
+  // Approach ring (shrinks inward)
   ctx.save();
-  ctx.globalAlpha = 0.5 + 0.4 * approachProgress;
+  ctx.globalAlpha = 0.55 + 0.35 * approachProg;
   ctx.beginPath(); ctx.arc(x, y, approachR, 0, Math.PI * 2);
-  ctx.strokeStyle = isDanger ? '#ff6b6b' : color;
-  ctx.lineWidth = isDanger ? 2.5 : 2;
+  ctx.strokeStyle = ringColor;
+  ctx.lineWidth   = isDanger ? 2.8 : 2.2;
   ctx.stroke();
   ctx.restore();
 
-  // Glow layers — more intense on streak
+  // Outer glow layers
   for (const [r, a] of [
     [TARGET_R * 3.0, 0.05 + 0.04 * pulse + glowBoost],
     [TARGET_R * 1.9, 0.11 + 0.06 * pulse + glowBoost],
@@ -162,7 +160,7 @@ function drawApproachTarget(ctx: CanvasRenderingContext2D, t: Target, elapsed: n
     ctx.save();
     ctx.globalAlpha = chargeProgress * a;
     ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fillStyle = color; ctx.fill();
+    ctx.fillStyle = activeColor; ctx.fill();
     ctx.restore();
   }
 
@@ -170,100 +168,27 @@ function drawApproachTarget(ctx: CanvasRenderingContext2D, t: Target, elapsed: n
   ctx.save();
   ctx.globalAlpha = chargeProgress;
   ctx.beginPath(); ctx.arc(x, y, TARGET_R, 0, Math.PI * 2);
-  ctx.fillStyle = `${color}1a`; ctx.fill();
-  ctx.strokeStyle = isClickable ? color : `${color}66`;
-  ctx.lineWidth = isClickable ? 2.5 : 2;
+  ctx.fillStyle   = isClickable ? `${activeColor}22` : `${activeColor}10`;
+  ctx.fill();
+  ctx.strokeStyle = isClickable ? activeColor : `${activeColor}55`;
+  ctx.lineWidth   = isClickable ? 2.5 : 2;
   ctx.stroke();
   ctx.restore();
 
-  // Center dot
+  // Hit number inside circle (OSU-style)
   ctx.save();
-  ctx.globalAlpha = chargeProgress;
-  ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2);
-  ctx.fillStyle = isClickable ? '#fff' : 'rgba(255,255,255,0.4)'; ctx.fill();
+  ctx.globalAlpha = chargeProgress * (isClickable ? 1 : 0.55);
+  ctx.fillStyle   = isClickable ? '#ffffff' : 'rgba(255,255,255,0.5)';
+  ctx.font        = `800 ${hitNumber >= 100 ? 11 : hitNumber >= 10 ? 13 : 15}px ui-monospace, monospace`;
+  ctx.textAlign   = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.shadowColor = activeColor;
+  ctx.shadowBlur  = isClickable ? 8 : 0;
+  ctx.fillText(String(hitNumber), x, y);
   ctx.restore();
 }
 
-function drawDelayTarget(ctx: CanvasRenderingContext2D, t: Target, elapsed: number) {
-  const { x, y } = t;
-  const isUnlocked = elapsed >= CHARGE_MS + DELAY_EXPAND_MS;
-  const chargeProgress = Math.min(elapsed / CHARGE_MS, 1);
-  const pulse = 0.5 + 0.5 * Math.sin(Date.now() * 0.005);
-  const expandProgress = Math.min(Math.max(elapsed - CHARGE_MS, 0) / DELAY_EXPAND_MS, 1);
-  const expandR = TARGET_R + (DELAY_GATE_R - TARGET_R) * expandProgress;
-
-  ctx.save();
-  ctx.globalAlpha = chargeProgress * 0.35;
-  ctx.beginPath(); ctx.arc(x, y, DELAY_GATE_R, 0, Math.PI * 2);
-  ctx.strokeStyle = '#fb923c';
-  ctx.lineWidth = 1.5;
-  ctx.setLineDash([6, 4]);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.restore();
-
-  if (!isUnlocked) {
-    ctx.save();
-    ctx.globalAlpha = chargeProgress * (0.6 + 0.3 * pulse);
-    ctx.beginPath(); ctx.arc(x, y, expandR, 0, Math.PI * 2);
-    ctx.strokeStyle = '#fb923c';
-    ctx.lineWidth = 2.2;
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  for (const [r, a] of [
-    [TARGET_R * 2.8, 0.06 + 0.04 * pulse],
-    [TARGET_R * 1.8, 0.1 + 0.06 * pulse],
-  ] as [number, number][]) {
-    ctx.save();
-    ctx.globalAlpha = chargeProgress * a;
-    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fillStyle = '#fb923c'; ctx.fill();
-    ctx.restore();
-  }
-
-  const bodyAlpha = isUnlocked ? 1 : chargeProgress;
-  ctx.save();
-  ctx.globalAlpha = bodyAlpha;
-  ctx.beginPath(); ctx.arc(x, y, TARGET_R, 0, Math.PI * 2);
-  ctx.fillStyle = isUnlocked ? 'rgba(251,146,60,0.22)' : 'rgba(251,146,60,0.1)'; ctx.fill();
-  ctx.strokeStyle = isUnlocked ? '#fb923c' : 'rgba(251,146,60,0.55)';
-  ctx.lineWidth = isUnlocked ? 2.5 : 2;
-  ctx.stroke();
-  ctx.restore();
-
-  ctx.save();
-  ctx.globalAlpha = isUnlocked ? 1 : chargeProgress * 0.4;
-  ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2);
-  ctx.fillStyle = isUnlocked ? '#fff' : 'rgba(251,146,60,0.5)'; ctx.fill();
-  ctx.restore();
-
-  if (!isUnlocked && chargeProgress > 0.5) {
-    ctx.save();
-    ctx.globalAlpha = chargeProgress * 0.55;
-    ctx.fillStyle = '#fb923c';
-    ctx.font = `bold 9px sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.fillText('WAIT', x, y - TARGET_R - 10);
-    ctx.restore();
-  }
-
-  if (isUnlocked) {
-    const afterUnlock = elapsed - (CHARGE_MS + DELAY_EXPAND_MS);
-    const clickProgress = Math.min(afterUnlock / DELAY_CLICK_MS, 1);
-    const isDanger = clickProgress > 0.6;
-    const afterR = TARGET_R + (TARGET_R * 1.6) * (1 - clickProgress * clickProgress);
-    ctx.save();
-    ctx.globalAlpha = 0.6 + 0.35 * clickProgress;
-    ctx.beginPath(); ctx.arc(x, y, afterR, 0, Math.PI * 2);
-    ctx.strokeStyle = isDanger ? '#ff6b6b' : '#fb923c';
-    ctx.lineWidth = isDanger ? 2.5 : 2;
-    ctx.stroke();
-    ctx.restore();
-  }
-}
-
+// ── Decoy (trap circle — red X) ───────────────────────────────────────────────
 function drawDecoy(ctx: CanvasRenderingContext2D, d: Decoy, elapsed: number) {
   const { x, y } = d;
   const chargeProgress = Math.min(elapsed / CHARGE_MS, 1);
@@ -276,20 +201,20 @@ function drawDecoy(ctx: CanvasRenderingContext2D, d: Decoy, elapsed: number) {
     ctx.save();
     ctx.globalAlpha = chargeProgress * a;
     ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fillStyle = '#ff4444'; ctx.fill();
+    ctx.fillStyle = '#ef4444'; ctx.fill();
     ctx.restore();
   }
 
   ctx.save();
   ctx.globalAlpha = chargeProgress;
   ctx.beginPath(); ctx.arc(x, y, DECOY_R, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(255,68,68,0.1)'; ctx.fill();
-  ctx.strokeStyle = '#ff4444'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = 'rgba(239,68,68,0.1)'; ctx.fill();
+  ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 2; ctx.stroke();
   ctx.restore();
 
   ctx.save();
   ctx.globalAlpha = chargeProgress * 0.95;
-  ctx.strokeStyle = '#ff4444'; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+  ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
   const s = 7;
   ctx.beginPath();
   ctx.moveTo(x - s, y - s); ctx.lineTo(x + s, y + s);
@@ -298,16 +223,15 @@ function drawDecoy(ctx: CanvasRenderingContext2D, d: Decoy, elapsed: number) {
   ctx.restore();
 }
 
+// ── Hit / miss effects ────────────────────────────────────────────────────────
 function drawEffect(ctx: CanvasRenderingContext2D, fx: CanvasEffect, now: number) {
-  const age = now - fx.startTime;
+  const age   = now - fx.startTime;
   const color = (fx as any).color ?? '#00ff88';
 
   if (fx.type === 'hit') {
     const dur = 620;
     if (age > dur) return;
     const t = age / dur;
-
-    // Three expanding rings
     const rings: [number, number, number, number][] = [
       [TARGET_R,      TARGET_R * 3.4, 0,    0.9],
       [8,             TARGET_R * 2.4, 0.05, 0.65],
@@ -323,23 +247,21 @@ function drawEffect(ctx: CanvasRenderingContext2D, fx: CanvasEffect, now: number
       ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.stroke();
       ctx.restore();
     }
-
-    // Center flash
     ctx.save();
     ctx.globalAlpha = 0.25 * (1 - t);
     ctx.beginPath(); ctx.arc(fx.x, fx.y, TARGET_R, 0, Math.PI * 2);
     ctx.fillStyle = color; ctx.fill();
     ctx.restore();
-
-    // 8 outward particles
     for (let i = 0; i < 8; i++) {
       const angle = (i / 8) * Math.PI * 2;
-      const dist = TARGET_R * 1.4 + TARGET_R * 2.8 * (1 - Math.pow(1 - t, 2));
-      const px = fx.x + Math.cos(angle) * dist;
-      const py = fx.y + Math.sin(angle) * dist;
+      const dist  = TARGET_R * 1.4 + TARGET_R * 2.8 * (1 - Math.pow(1 - t, 2));
       ctx.save();
       ctx.globalAlpha = 0.8 * (1 - t);
-      ctx.beginPath(); ctx.arc(px, py, Math.max(0.5, 2.8 - t * 2.5), 0, Math.PI * 2);
+      ctx.beginPath(); ctx.arc(
+        fx.x + Math.cos(angle) * dist,
+        fx.y + Math.sin(angle) * dist,
+        Math.max(0.5, 2.8 - t * 2.5), 0, Math.PI * 2,
+      );
       ctx.fillStyle = color; ctx.fill();
       ctx.restore();
     }
@@ -352,28 +274,7 @@ function drawEffect(ctx: CanvasRenderingContext2D, fx: CanvasEffect, now: number
     ctx.save();
     ctx.globalAlpha = 0.9 * (1 - t);
     ctx.beginPath(); ctx.arc(fx.x, fx.y, DECOY_R + (DECOY_R * 2.5 - DECOY_R) * ease, 0, Math.PI * 2);
-    ctx.strokeStyle = '#ff4444'; ctx.lineWidth = 2.5; ctx.stroke();
-    ctx.restore();
-    ctx.save();
-    ctx.globalAlpha = 0.2 * (1 - t);
-    ctx.beginPath(); ctx.arc(fx.x, fx.y, DECOY_R, 0, Math.PI * 2);
-    ctx.fillStyle = '#ff4444'; ctx.fill();
-    ctx.restore();
-
-  } else if (fx.type === 'early') {
-    const dur = 380;
-    if (age > dur) return;
-    const t = age / dur;
-    const ease = 1 - Math.pow(1 - t, 3);
-    ctx.save();
-    ctx.globalAlpha = 0.85 * (1 - t);
-    ctx.beginPath(); ctx.arc(fx.x, fx.y, TARGET_R + (TARGET_R * 2 - TARGET_R) * ease, 0, Math.PI * 2);
-    ctx.strokeStyle = '#fb923c'; ctx.lineWidth = 2.5; ctx.stroke();
-    ctx.restore();
-    ctx.save();
-    ctx.globalAlpha = 0.18 * (1 - t);
-    ctx.beginPath(); ctx.arc(fx.x, fx.y, TARGET_R, 0, Math.PI * 2);
-    ctx.fillStyle = '#fb923c'; ctx.fill();
+    ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 2.5; ctx.stroke();
     ctx.restore();
 
   } else {
@@ -397,16 +298,16 @@ function drawFloaters(ctx: CanvasRenderingContext2D, floaters: Floater[], now: n
   for (const f of floaters) {
     const age = now - f.startTime;
     if (age > dur) continue;
-    const t = age / dur;
+    const t    = age / dur;
     const ease = 1 - Math.pow(1 - t, 2);
     ctx.save();
     ctx.globalAlpha = (1 - t) * 0.95;
-    ctx.fillStyle = f.color;
-    ctx.font = `bold ${Math.round(15 - t * 3)}px sans-serif`;
-    ctx.textAlign = 'center';
+    ctx.fillStyle   = f.color;
+    ctx.font        = `bold ${Math.round(15 - t * 3)}px sans-serif`;
+    ctx.textAlign   = 'center';
     ctx.textBaseline = 'middle';
     ctx.shadowColor = f.color;
-    ctx.shadowBlur = 8;
+    ctx.shadowBlur  = 8;
     ctx.fillText('+1', f.x, f.y - 48 * ease);
     ctx.restore();
   }
@@ -419,7 +320,7 @@ function drawFlash(ctx: CanvasRenderingContext2D, flash: { startTime: number; co
   const t = age / 160;
   ctx.save();
   ctx.globalAlpha = 0.13 * (1 - t);
-  ctx.fillStyle = flash.color;
+  ctx.fillStyle   = flash.color;
   ctx.fillRect(0, 0, CW, CH);
   ctx.restore();
 }
@@ -434,14 +335,14 @@ interface Props {
 export default function GameScreen({ config, socket, onResult }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  const [countdown, setCountdown] = useState(3);
-  const [phase, setPhase] = useState<'countdown' | 'playing' | 'waiting' | 'done'>('countdown');
-  const [currentIdx, setCurrentIdx] = useState(0);
+  const [countdown, setCountdown]       = useState(3);
+  const [phase, setPhase]               = useState<'countdown' | 'playing' | 'waiting' | 'done'>('countdown');
+  const [currentIdx, setCurrentIdx]     = useState(0);
   const [opponentHits, setOpponentHits] = useState(0);
-  const [timeLeft, setTimeLeft] = useState(GAME_DURATION_MS / 1000);
-  const [hitDisplay, setHitDisplay] = useState(0);
-  const [penaltyMs, setPenaltyMs] = useState(0);
-  const [streak, setStreak] = useState(0);
+  const [timeLeft, setTimeLeft]         = useState(GAME_DURATION_MS / 1000);
+  const [hitDisplay, setHitDisplay]     = useState(0);
+  const [penaltyMs, setPenaltyMs]       = useState(0);
+  const [streak, setStreak]             = useState(0);
 
   const phaseRef        = useRef<string>('countdown');
   const currentIdxRef   = useRef(0);
@@ -460,16 +361,14 @@ export default function GameScreen({ config, socket, onResult }: Props) {
   const flashRef        = useRef<{ startTime: number; color: string } | null>(null);
   const timeLeftRef     = useRef(GAME_DURATION_MS / 1000);
 
-  const targets   = useMemo(() => generateTargets(config.roomCode), [config.roomCode]);
-  const kinds     = useMemo(() => generateKinds(config.roomCode), [config.roomCode]);
-  const decoys    = useMemo(() => generateDecoys(config.roomCode, targets), [config.roomCode, targets]);
+  const targets  = useMemo(() => generateTargets(config.roomCode), [config.roomCode]);
+  const decoys   = useMemo(() => generateDecoys(config.roomCode, targets), [config.roomCode, targets]);
   const decoysRef = useRef(decoys); decoysRef.current = decoys;
-  const kindsRef  = useRef(kinds);  kindsRef.current  = kinds;
 
   useEffect(() => { phaseRef.current = phase; }, [phase]);
   useEffect(() => { currentIdxRef.current = currentIdx; }, [currentIdx]);
 
-  // ── Countdown ─────────────────────────────────────────────────────────────────
+  // ── Countdown ────────────────────────────────────────────────────────────────
   useEffect(() => {
     let n = 3;
     const id = setInterval(() => {
@@ -478,7 +377,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
         clearInterval(id);
         setCountdown(0);
         const now = Date.now();
-        startTimeRef.current = now;
+        startTimeRef.current  = now;
         appearTimeRef.current = now;
         setPhase('playing');
         phaseRef.current = 'playing';
@@ -490,12 +389,12 @@ export default function GameScreen({ config, socket, onResult }: Props) {
     return () => clearInterval(id);
   }, []);
 
-  // ── 30-second game clock ──────────────────────────────────────────────────────
+  // ── 30-second game clock ─────────────────────────────────────────────────────
   useEffect(() => {
     if (phase !== 'playing') return;
     const id = setInterval(() => {
-      const wall = Date.now() - startTimeRef.current;
-      const left = Math.max(0, GAME_DURATION_MS - wall);
+      const wall    = Date.now() - startTimeRef.current;
+      const left    = Math.max(0, GAME_DURATION_MS - wall);
       const leftSecs = left / 1000;
       setTimeLeft(leftSecs);
       timeLeftRef.current = leftSecs;
@@ -506,7 +405,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
-  // ── Socket listeners ──────────────────────────────────────────────────────────
+  // ── Socket ───────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (config.solo) return;
     socket.on('reflex:opponent-hit', ({ targetIndex }: { targetIndex: number }) => {
@@ -517,55 +416,39 @@ export default function GameScreen({ config, socket, onResult }: Props) {
       setPhase('done');
       onResult({
         won: data.winnerId === socket.id,
-        myTimeMs: myFinalTimeRef.current,
-        myScore: data.myScore ?? myFinalScoreRef.current,
-        myHits: data.myHits ?? hitCountRef.current,
+        myTimeMs:       myFinalTimeRef.current,
+        myScore:        data.myScore        ?? myFinalScoreRef.current,
+        myHits:         data.myHits         ?? hitCountRef.current,
         opponentTimeMs: data.opponentTimeMs ?? null,
-        opponentScore: data.opponentScore ?? null,
-        opponentHits: data.opponentHits ?? null,
-        winnerName: data.winnerName,
+        opponentScore:  data.opponentScore  ?? null,
+        opponentHits:   data.opponentHits   ?? null,
+        winnerName:     data.winnerName,
       });
     });
     return () => { socket.off('reflex:opponent-hit'); socket.off('reflex:result'); };
   }, [socket, onResult, config.solo]);
 
-  // ── End game ──────────────────────────────────────────────────────────────────
+  // ── End game ─────────────────────────────────────────────────────────────────
   function endGame() {
     if (gameEndRef.current || phaseRef.current === 'done' || phaseRef.current === 'waiting') return;
     gameEndRef.current = true;
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
     const total = GAME_DURATION_MS;
-    myFinalTimeRef.current = total;
+    myFinalTimeRef.current  = total;
     const score = hitCountRef.current * 1000 - Math.floor(total / 10);
     myFinalScoreRef.current = score;
     if (config.solo) {
       phaseRef.current = 'done'; setPhase('done');
-      onResult({
-        won: true,
-        myTimeMs: total,
-        myScore: score,
-        myHits: hitCountRef.current,
-        opponentTimeMs: null,
-        opponentScore: null,
-        opponentHits: null,
-        winnerName: config.playerName,
-      });
+      onResult({ won: true, myTimeMs: total, myScore: score, myHits: hitCountRef.current, opponentTimeMs: null, opponentScore: null, opponentHits: null, winnerName: config.playerName });
     } else {
       setPhase('waiting'); phaseRef.current = 'waiting';
       socket.emit('reflex:finish', { roomCode: config.roomCode, totalTimeMs: total, hits: hitsRef.current });
     }
   }
 
-  // ── Timeout scheduling ────────────────────────────────────────────────────────
-  function timeoutDuration(kind: TargetKind) {
-    return kind === 'delay'
-      ? CHARGE_MS + DELAY_EXPAND_MS + DELAY_CLICK_MS
-      : CHARGE_MS + TIME_LIMIT_MS;
-  }
-
+  // ── Timeout ──────────────────────────────────────────────────────────────────
   function scheduleTimeout(_appearTime: number) {
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    const kind = kindsRef.current[currentIdxRef.current];
     timeoutRef.current = setTimeout(() => {
       if (phaseRef.current !== 'playing') return;
       penaltyRef.current += TIMEOUT_PENALTY_MS;
@@ -575,7 +458,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
       const t = targets[currentIdxRef.current];
       if (t) effectsRef.current.push({ x: t.x, y: t.y, type: 'miss', startTime: Date.now() });
       advanceTarget(Date.now());
-    }, timeoutDuration(kind));
+    }, CHARGE_MS + TIME_LIMIT_MS);
   }
 
   function advanceTarget(now: number) {
@@ -591,17 +474,19 @@ export default function GameScreen({ config, socket, onResult }: Props) {
   const handleClick = useCallback((e: MouseEvent<HTMLCanvasElement>) => {
     if (phaseRef.current !== 'playing') return;
     const canvas = canvasRef.current!;
-    const rect = canvas.getBoundingClientRect();
-    const cx = (e.clientX - rect.left) * (CW / rect.width);
-    const cy = (e.clientY - rect.top)  * (CH / rect.height);
-    const now = Date.now();
+    const rect   = canvas.getBoundingClientRect();
+    const cx     = (e.clientX - rect.left) * (CW / rect.width);
+    const cy     = (e.clientY - rect.top)  * (CH / rect.height);
+    const now    = Date.now();
     const elapsed = now - appearTimeRef.current;
 
+    // Too early — charge animation not done
     if (elapsed < CHARGE_MS) {
-      flashRef.current = { startTime: now, color: '#fb923c' };
+      flashRef.current = { startTime: now, color: '#ef4444' };
       return;
     }
 
+    // Check decoys first
     const currentDecoys = decoysRef.current[currentIdxRef.current] || [];
     const hitDecoy = currentDecoys.find((d: Decoy) => Math.hypot(cx - d.x, cy - d.y) <= DECOY_R + 8);
     if (hitDecoy) {
@@ -615,22 +500,14 @@ export default function GameScreen({ config, socket, onResult }: Props) {
 
     const t = targets[currentIdxRef.current];
     if (!t) return;
-    if (Math.hypot(cx - t.x, cy - t.y) > TARGET_R + 10) {
+
+    // Miss — clicked but not on the target
+    if (Math.hypot(cx - t.x, cy - t.y) > HIT_TOLERANCE) {
       penaltyRef.current += 200;
       setPenaltyMs((p: number) => p + 200);
       streakRef.current = 0;
       setStreak(0);
       effectsRef.current.push({ x: cx, y: cy, type: 'miss', startTime: now });
-      return;
-    }
-
-    const kind = kindsRef.current[currentIdxRef.current];
-    if (kind === 'delay' && elapsed < CHARGE_MS + DELAY_EXPAND_MS) {
-      penaltyRef.current += EARLY_PENALTY_MS;
-      setPenaltyMs((p: number) => p + EARLY_PENALTY_MS);
-      streakRef.current = 0;
-      setStreak(0);
-      effectsRef.current.push({ x: t.x, y: t.y, type: 'early', startTime: now });
       return;
     }
 
@@ -650,7 +527,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
     flashRef.current = { startTime: now, color: hitColor };
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
     advanceTarget(now);
-  }, [targets, kinds, socket, config]);
+  }, [targets, socket, config]);
 
   // ── Render loop ───────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -665,15 +542,16 @@ export default function GameScreen({ config, socket, onResult }: Props) {
 
       if (phaseRef.current === 'playing' && currentIdxRef.current < targets.length) {
         const elapsed = now - appearTimeRef.current;
-        const kind = kindsRef.current[currentIdxRef.current];
-        for (const d of decoysRef.current[currentIdxRef.current] || []) {
-          drawDecoy(ctx, d, elapsed);
-        }
-        if (kind === 'delay') {
-          drawDelayTarget(ctx, targets[currentIdxRef.current], elapsed);
-        } else {
-          drawApproachTarget(ctx, targets[currentIdxRef.current], elapsed, streakRef.current);
-        }
+        const idx     = currentIdxRef.current;
+        for (const d of decoysRef.current[idx] || []) drawDecoy(ctx, d, elapsed);
+        drawTarget(
+          ctx,
+          targets[idx],
+          elapsed,
+          streakRef.current,
+          getTargetColor(idx),
+          hitCountRef.current + 1,
+        );
       }
 
       drawFlash(ctx, flashRef.current, now);
@@ -692,11 +570,11 @@ export default function GameScreen({ config, socket, onResult }: Props) {
   }, [targets]);
 
   // ── HUD ───────────────────────────────────────────────────────────────────────
-  const currentKind = kinds[currentIdx] ?? 'approach';
   const timerDanger = timeLeft <= 5;
   const timerPct    = timeLeft / (GAME_DURATION_MS / 1000);
   const sColor      = streakColor(streak);
   const streakLabel = streak >= 10 ? 'GODLIKE' : streak >= 6 ? 'ON FIRE' : streak >= 3 ? 'HOT' : null;
+  const circleColor = getTargetColor(currentIdx);
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: '#03030a', userSelect: 'none' }}>
@@ -706,17 +584,17 @@ export default function GameScreen({ config, socket, onResult }: Props) {
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: '0 24px', height: 52,
         background: 'rgba(0,0,0,0.6)',
-        borderBottom: `1px solid ${timerDanger ? 'rgba(239,68,68,0.35)' : 'rgba(34,211,238,0.1)'}`,
+        borderBottom: `1px solid ${timerDanger ? 'rgba(239,68,68,0.35)' : `${circleColor}28`}`,
         backdropFilter: 'blur(8px)', flexShrink: 0,
         transition: 'border-color 0.3s',
       }}>
 
-        {/* Left: hit count + streak badge */}
+        {/* Left: hits + streak */}
         <div style={{ minWidth: 130, display: 'flex', flexDirection: 'column', gap: 2 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
             <span style={{
               fontSize: '1.4rem', fontWeight: 900, letterSpacing: '-0.02em',
-              color: streak >= 3 ? sColor : '#22d3ee',
+              color: streak >= 3 ? sColor : circleColor,
               fontVariantNumeric: 'tabular-nums',
               textShadow: streak >= 3 ? `0 0 18px ${sColor}99` : 'none',
               transition: 'color 0.2s, text-shadow 0.2s',
@@ -742,7 +620,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
           ) : null}
         </div>
 
-        {/* Center: timer + kind label */}
+        {/* Center: timer */}
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
             <span style={{
@@ -759,22 +637,14 @@ export default function GameScreen({ config, socket, onResult }: Props) {
             <div style={{
               height: '100%', borderRadius: 99,
               width: `${timerPct * 100}%`,
-              background: timerDanger ? '#ef4444' : '#22d3ee',
-              boxShadow: timerDanger ? '0 0 8px #ef4444' : 'none',
-              transition: 'background 0.3s, box-shadow 0.3s',
+              background: timerDanger ? '#ef4444' : circleColor,
+              boxShadow: timerDanger ? '0 0 8px #ef4444' : `0 0 6px ${circleColor}`,
+              transition: 'background 0.3s',
             }} />
           </div>
-          {phase === 'playing' && (
-            <span style={{
-              fontSize: '0.55rem', fontWeight: 800, letterSpacing: '0.16em', textTransform: 'uppercase',
-              color: currentKind === 'delay' ? '#fb923c' : '#22d3ee', opacity: 0.8,
-            }}>
-              {currentKind === 'delay' ? '⏳ WAIT' : '⚡ CLICK'}
-            </span>
-          )}
         </div>
 
-        {/* Right: opponent / solo */}
+        {/* Right: opponent */}
         <div style={{ minWidth: 130, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
           {config.solo ? (
             <span style={{ fontSize: '0.62rem', color: 'rgba(34,211,238,0.35)', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
@@ -796,6 +666,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
         </div>
       </div>
 
+      {/* ── Canvas ── */}
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#03030a' }}>
         <canvas
           ref={canvasRef}
@@ -830,9 +701,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
             alignItems: 'center', justifyContent: 'center', gap: 16,
             background: 'rgba(3,3,10,0.8)', backdropFilter: 'blur(6px)',
           }}>
-            <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#00ff88' }}>
-              {hitDisplay} hits
-            </div>
+            <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#00ff88' }}>{hitDisplay} hits</div>
             <div style={{ fontSize: '0.82rem', color: 'rgba(255,255,255,0.4)', letterSpacing: '0.06em' }}>
               Waiting for opponent to finish…
             </div>
