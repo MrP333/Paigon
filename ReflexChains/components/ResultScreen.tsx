@@ -41,7 +41,7 @@ interface Props {
   solo?: boolean;
 }
 
-const NUM_TARGETS = 10;
+const NUM_TARGETS_DISPLAY = 10; // dots indicator (first 10 hits)
 
 function fmtTime(ms: number | null) {
   if (ms === null) return '—';
@@ -185,7 +185,7 @@ export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
           </div>
 
           <div style={{ background: 'rgba(255,255,255,0.025)', borderRadius: 14, border: '1px solid rgba(255,255,255,0.06)', padding: '16px 20px', animation: 'paigon-stat 0.35s 0.55s both' }}>
-            <StatRow label="Targets hit" value={`${myHits} / ${NUM_TARGETS}`} highlight delay={0.6} />
+            <StatRow label="Targets hit" value={`${myHits}`} highlight delay={0.6} />
             <StatRow label="Time" value={fmtTime(myTimeMs)} delay={0.65} />
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 7, animation: `paigon-stat 0.35s 0.7s both` }}>
               <span style={{ fontSize: '0.62rem', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.3)' }}>
@@ -298,7 +298,7 @@ export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
               <div style={{ fontSize: '0.6rem', fontWeight: 600, color: 'rgba(255,255,255,0.2)', letterSpacing: '0.06em', marginTop: 3, marginBottom: 12 }}>pts</div>
               {/* Hits dots */}
               <div style={{ display: 'flex', justifyContent: 'center', gap: 3, marginBottom: 8 }}>
-                {Array.from({ length: NUM_TARGETS }, (_, j) => (
+                {Array.from({ length: NUM_TARGETS_DISPLAY }, (_, j) => (
                   <div key={j} style={{
                     width: 6, height: 6, borderRadius: 2,
                     background: j < (r.hits ?? 0) ? (r.winner ? accent : 'rgba(255,255,255,0.4)') : 'rgba(255,255,255,0.07)',
@@ -307,7 +307,7 @@ export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
                 ))}
               </div>
               <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'rgba(255,255,255,0.3)', fontVariantNumeric: 'tabular-nums' }}>
-                {r.hits ?? '?'}/{NUM_TARGETS} hits · {fmtTime(r.timeMs)}
+                {r.hits ?? '?'} hits · {fmtTime(r.timeMs)}
               </div>
             </div>
           ))}

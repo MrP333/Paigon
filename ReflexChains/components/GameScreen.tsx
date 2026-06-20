@@ -614,6 +614,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
     }
 
     const t = targets[currentIdxRef.current];
+    if (!t) return;
     if (Math.hypot(cx - t.x, cy - t.y) > TARGET_R + 10) {
       penaltyRef.current += 200;
       setPenaltyMs((p: number) => p + 200);
