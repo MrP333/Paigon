@@ -1,16 +1,33 @@
 import { useState, useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, addDoc, collection, serverTimestamp, increment } from 'firebase/firestore';
 import { auth, db } from './services/firebase';
 import { GameConfig, ResultData } from './types';
 import HomeScreen from './components/HomeScreen';
 import GameScreen from './components/GameScreen';
+import TrialScreen from './components/TrialScreen';
 import ResultScreen from './components/ResultScreen';
+import DepositModal from './components/DepositModal';
 
 const SERVER_URL = 'https://mazergame11-production.up.railway.app';
 
-type Screen = 'home' | 'waiting' | 'game' | 'result';
+type Screen = 'home' | 'waiting' | 'game' | 'trial' | 'result';
+
+const DAILY_CHALLENGES = [
+  { label: 'Win any competitive match', target: 1, reward: 10 },
+  { label: 'Win 2 competitive matches', target: 2, reward: 20 },
+  { label: 'Win any competitive match', target: 1, reward: 10 },
+  { label: 'Win 3 competitive matches', target: 3, reward: 30 },
+  { label: 'Win 2 competitive matches', target: 2, reward: 20 },
+];
+
+function getDailyChallenge() {
+  const d = new Date();
+  const start = new Date(d.getFullYear(), 0, 0);
+  const dayOfYear = Math.floor((d.getTime() - start.getTime()) / 86400000);
+  return DAILY_CHALLENGES[dayOfYear % DAILY_CHALLENGES.length];
+}
 
 export default function App() {
   const [screen, setScreen]           = useState<Screen>('home');
@@ -20,9 +37,20 @@ export default function App() {
 
   // Firebase auth + user data
   const [firebaseUser, setFirebaseUser] = useState<User | null | undefined>(undefined);
+  const [showDeposit, setShowDeposit] = useState(false);
   const [playerName, setPlayerName]   = useState('Soldier');
   const [playerColor, setPlayerColor] = useState('#ffa020');
   const [balance, setBalance]         = useState(0); // balanceCents
+  const [trialComplete, setTrialComplete] = useState(false);
+  const [isDev, setIsDev] = useState(false);
+  const [soloRunsToday, setSoloRunsToday] = useState(0);
+  const [points, setPoints]         = useState(0);
+  const [winStreak, setWinStreak] = useState(0);
+  const [lossStreak, setLossStreak] = useState(0);
+  const [challengeProgress, setChallengeProgress] = useState(0);
+  const [challengeClaimed, setChallengeClaimed]   = useState(false);
+
+  const SOLO_DAILY_LIMIT = 5;
 
   const socketRef = useRef<Socket | null>(null);
 
@@ -37,25 +65,48 @@ export default function App() {
         if (data.username) setPlayerName(data.username);
         if (data.color)    setPlayerColor(data.color);
         setBalance(data.balanceCents ?? 0);
+        if (data.trialCompletedNml) setTrialComplete(true);
+        if (data.isDev) setIsDev(true);
+        const today = new Date().toISOString().slice(0, 10);
+        if (data.soloRunsDate === today) setSoloRunsToday(data.soloRunsToday ?? 0);
+        setPoints(data.points ?? 0);
+        setWinStreak(data.winStreak ?? 0);
+        setLossStreak(data.lossStreak ?? 0);
+        if (data.dailyChallengeDate === today) {
+          setChallengeProgress(data.dailyChallengeProgress ?? 0);
+          setChallengeClaimed(data.dailyChallengeClaimed ?? false);
+        }
       } else {
-        // Fall back to email prefix as name
         setPlayerName(user.email?.split('@')[0] ?? 'Soldier');
       }
     });
   }, []);
+
+  async function consumeSoloRun(): Promise<boolean> {
+    if (isDev) return true;
+    if (!firebaseUser) return true;
+    const today = new Date().toISOString().slice(0, 10);
+    const currentCount = soloRunsToday;
+    if (currentCount >= SOLO_DAILY_LIMIT) return false;
+    const next = currentCount + 1;
+    setSoloRunsToday(next);
+    setDoc(doc(db, 'users', firebaseUser.uid), { soloRunsDate: today, soloRunsToday: next }, { merge: true }).catch(console.error);
+    return true;
+  }
 
   // Socket connection
   useEffect(() => {
     const s = io(SERVER_URL, { transports: ['polling', 'websocket'] });
     socketRef.current = s;
 
-    s.on('nml:matched', (data: { roomCode: string; opponentName: string; opponentColor: string; entryCents?: number; payoutCents?: number }) => {
+    s.on('nml:matched', (data: { roomCode: string; opponentName: string; opponentColor: string; entryCents?: number; payoutCents?: number; towerCount?: number; opponentElo?: number }) => {
       setConfig(prev => prev ? {
         ...prev,
         roomCode: data.roomCode,
         opponentName: data.opponentName,
         opponentColor: data.opponentColor,
         payoutCents: data.payoutCents ?? 0,
+        towerCount: data.towerCount ?? 5,
       } : null);
       setScreen('game');
     });
@@ -74,9 +125,27 @@ export default function App() {
     return () => { s.disconnect(); socketRef.current = null; };
   }, []);
 
-  const handleQueue = (stakeId: string) => {
+  const handleBotTrial = () => {
+    setScreen('trial');
+  };
+
+  const handleTrialComplete = () => {
+    setTrialComplete(true);
+    if (firebaseUser) {
+      setDoc(doc(db, 'users', firebaseUser.uid), { trialCompletedNml: true }, { merge: true }).catch(console.error);
+    }
+    setScreen('home');
+  };
+
+  const handleQueue = async (stakeId: string) => {
     const s = socketRef.current;
     if (!s) return;
+    // Gate paid lobbies behind trial completion
+    const isPaid = stakeId !== 'free';
+    if (isPaid && !trialComplete) {
+      handleBotTrial();
+      return;
+    }
     setSelectedStake(stakeId);
     setConfig({
       roomCode: '',
@@ -87,16 +156,28 @@ export default function App() {
       stakeId,
       payoutCents: 0,
     });
-    s.emit('nml:queue', {
-      name: playerName,
-      color: playerColor,
-      stakeId,
-      uid: firebaseUser?.uid ?? null,
+    const idToken = firebaseUser ? await firebaseUser.getIdToken() : null;
+    s.emit('nml:queue', { name: playerName, color: playerColor, stakeId, idToken }, (res: any) => {
+      if (res?.error === 'insufficient_balance') {
+        alert('Not enough Paigon Credits. Visit your account page to add PC.');
+        setScreen('home');
+        return;
+      }
+      if (res?.error === 'auth_required') {
+        alert('Please sign in to enter paid lobbies.');
+        setScreen('home');
+        return;
+      }
     });
     setScreen('waiting');
   };
 
-  const handleSolo = () => {
+  const handleSolo = async () => {
+    const allowed = await consumeSoloRun();
+    if (!allowed) {
+      alert(`You've used all ${SOLO_DAILY_LIMIT} solo practice runs for today. Come back tomorrow, or play a free competitive match!`);
+      return;
+    }
     const roomCode = Math.random().toString(36).slice(2, 7).toUpperCase();
     setConfig({
       roomCode,
@@ -107,6 +188,7 @@ export default function App() {
       stakeId: '',
       payoutCents: 0,
       solo: true,
+      towerCount: 4,
     });
     setScreen('game');
   };
@@ -114,6 +196,73 @@ export default function App() {
   const handleResult = (r: ResultData) => {
     setResult(r);
     setScreen('result');
+    if (firebaseUser && !config?.solo) {
+      const newWin  = r.won ? winStreak + 1 : 0;
+      const newLoss = !r.won && !r.draw ? lossStreak + 1 : 0;
+      setWinStreak(newWin);
+      setLossStreak(newLoss);
+
+      // Award points on win in paid lobby only
+      const isPaid = (r.entryCents ?? 0) > 0;
+      const pointsEarned = r.won && isPaid ? 20 : 0;
+      if (pointsEarned > 0) {
+        setPoints(p => p + pointsEarned);
+        setDoc(doc(db, 'users', firebaseUser.uid), { points: increment(pointsEarned) }, { merge: true }).catch(console.error);
+      }
+      setDoc(doc(db, 'users', firebaseUser.uid), {
+        winStreak: newWin, lossStreak: newLoss,
+      }, { merge: true }).catch(console.error);
+
+      addDoc(collection(db, 'users', firebaseUser.uid, 'matches'), {
+        game: 'NML',
+        won: r.won, draw: r.draw,
+        stakeCents: r.entryCents ?? 0,
+        payoutCents: r.won ? (r.payoutCents ?? 0) : 0,
+        myTimeMs: r.myTimeMs,
+        opponentTimeMs: r.opponentTimeMs,
+        pointsEarned,
+        createdAt: serverTimestamp(),
+      }).catch(console.error);
+
+      if (r.won) {
+        const today = new Date().toISOString().slice(0, 10);
+        const newProgress = challengeProgress + 1;
+        setChallengeProgress(newProgress);
+        setDoc(doc(db, 'users', firebaseUser.uid), {
+          dailyChallengeProgress: newProgress,
+          dailyChallengeDate: today,
+          dailyChallengeClaimed: challengeClaimed,
+        }, { merge: true }).catch(console.error);
+
+        addDoc(collection(db, 'recentActivity'), {
+          game: 'NML',
+          winner: playerName,
+          winnerColor: playerColor,
+          loser: config?.opponentName ?? 'Opponent',
+          stakeId: config?.stakeId ?? 'free',
+          payoutCents: r.payoutCents ?? 0,
+          createdAt: serverTimestamp(),
+        }).catch(console.error);
+      }
+    }
+  };
+
+  const handleClaimChallenge = async () => {
+    if (!firebaseUser || challengeClaimed) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const challenge = getDailyChallenge();
+    const rewardCents = challenge.reward * 10;
+    try {
+      await setDoc(doc(db, 'users', firebaseUser.uid), {
+        balanceCents: balance + rewardCents,
+        dailyChallengeClaimed: true,
+        dailyChallengeDate: today,
+      }, { merge: true });
+      setBalance(b => b + rewardCents);
+      setChallengeClaimed(true);
+    } catch (e) {
+      console.error('Challenge claim failed:', e);
+    }
   };
 
   const handlePlayAgain = () => {
@@ -143,45 +292,101 @@ export default function App() {
         <HomeScreen
           onQueue={handleQueue}
           onSolo={handleSolo}
+          onBotTrial={handleBotTrial}
+          trialComplete={trialComplete}
           playerName={playerName}
           playerColor={playerColor}
           balance={balance}
           isLoggedIn={!!firebaseUser}
+          onDeposit={() => setShowDeposit(true)}
+          soloRunsToday={firebaseUser ? soloRunsToday : undefined}
+          isDev={isDev}
+          points={firebaseUser ? points : undefined}
+          winStreak={winStreak}
+          lossStreak={lossStreak}
+          challenge={firebaseUser ? getDailyChallenge() : undefined}
+          challengeProgress={challengeProgress}
+          challengeClaimed={challengeClaimed}
+          onClaimChallenge={handleClaimChallenge}
         />
       )}
 
-      {screen === 'waiting' && (
-        <div style={{
-          width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
-          alignItems: 'center', justifyContent: 'center', background: '#03030a', gap: 16,
-        }}>
-          <div style={{ fontSize: '0.65rem', fontWeight: 700, letterSpacing: '0.3em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.2)' }}>
-            No Man's Land
-          </div>
-          {/* Player tag */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-            <div style={{ width: 34, height: 34, borderRadius: '50%', background: playerColor, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.9rem', fontWeight: 800, color: '#000' }}>
-              {playerName[0]?.toUpperCase()}
-            </div>
-            <span style={{ color: 'rgba(255,255,255,0.7)', fontWeight: 700, fontSize: '0.95rem' }}>{playerName}</span>
-          </div>
-          <div style={{ fontSize: '1.1rem', fontWeight: 700, color: 'rgba(255,255,255,0.6)' }}>
-            Searching for opponent…
-          </div>
-          <div style={{ display: 'flex', gap: 6 }}>
-            {[0,1,2].map(i => (
-              <div key={i} style={{ width: 7, height: 7, borderRadius: '50%', background: '#ffa020', animation: `pulse 1.2s ${i*0.2}s ease-in-out infinite`, opacity: 0.4 }} />
-            ))}
-          </div>
-          <button onClick={handleCancel} style={{
-            marginTop: 20, padding: '8px 24px', borderRadius: 8,
-            border: '1px solid rgba(255,255,255,0.1)', background: 'transparent',
-            color: 'rgba(255,255,255,0.35)', fontSize: '0.78rem', cursor: 'pointer', fontFamily: 'inherit',
+      {screen === 'waiting' && (() => {
+        const TIERS: Record<string, { label: string; entryCents: number; payoutCents: number }> = {
+          free:     { label: 'Free',     entryCents: 0,    payoutCents: 0    },
+          quick:    { label: 'Quick',    entryCents: 50,   payoutCents: 98   },
+          standard: { label: 'Standard', entryCents: 200,  payoutCents: 392  },
+          high:     { label: 'High',     entryCents: 1000, payoutCents: 1960 },
+          elite:    { label: 'Elite',    entryCents: 5000, payoutCents: 9800 },
+        };
+        const tier = TIERS[selectedStake] ?? TIERS.free;
+        const pc = (c: number) => Math.floor(c / 10) + ' PC';
+        return (
+          <div style={{
+            width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
+            alignItems: 'center', justifyContent: 'center', background: '#03030a', gap: 16,
           }}>
-            Cancel
-          </button>
-          <style>{`@keyframes pulse{0%,100%{opacity:0.15;transform:scale(0.8)}50%{opacity:0.8;transform:scale(1.2)}}`}</style>
-        </div>
+            <div style={{ fontSize: '0.65rem', fontWeight: 700, letterSpacing: '0.3em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.2)' }}>
+              No Man's Land
+            </div>
+
+            {/* Stake badge */}
+            {tier.entryCents > 0 && (
+              <div style={{
+                padding: '6px 16px', borderRadius: 20,
+                background: 'rgba(255,160,32,0.1)', border: '1px solid rgba(255,160,32,0.25)',
+                fontSize: '0.72rem', fontWeight: 700, color: '#ffa020', letterSpacing: '0.06em',
+              }}>
+                {tier.label} — {pc(tier.entryCents)} entry · {pc(tier.payoutCents)} to win
+              </div>
+            )}
+
+            {/* Player tag */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 4 }}>
+              <div style={{ width: 34, height: 34, borderRadius: '50%', background: playerColor, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.9rem', fontWeight: 800, color: '#000' }}>
+                {playerName[0]?.toUpperCase()}
+              </div>
+              <span style={{ color: 'rgba(255,255,255,0.7)', fontWeight: 700, fontSize: '0.95rem' }}>{playerName}</span>
+            </div>
+
+            <div style={{ fontSize: '1.05rem', fontWeight: 700, color: 'rgba(255,255,255,0.55)' }}>
+              Searching for opponent…
+            </div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {[0,1,2].map(i => (
+                <div key={i} style={{ width: 7, height: 7, borderRadius: '50%', background: '#ffa020', animation: `pulse 1.2s ${i*0.2}s ease-in-out infinite`, opacity: 0.4 }} />
+              ))}
+            </div>
+
+            {/* Controls reminder */}
+            <div style={{ marginTop: 8, display: 'flex', gap: 20, opacity: 0.22 }}>
+              {[['WASD', 'Move'], ['SHIFT', 'Sprint'], ['C', 'Crawl']].map(([k, v]) => (
+                <div key={k} style={{ textAlign: 'center', fontSize: '0.68rem' }}>
+                  <div style={{ fontWeight: 800, color: '#fff', fontFamily: 'monospace', marginBottom: 2 }}>{k}</div>
+                  <div style={{ color: 'rgba(255,255,255,0.5)' }}>{v}</div>
+                </div>
+              ))}
+            </div>
+
+            <button onClick={handleCancel} style={{
+              marginTop: 12, padding: '8px 24px', borderRadius: 8,
+              border: '1px solid rgba(255,255,255,0.1)', background: 'transparent',
+              color: 'rgba(255,255,255,0.35)', fontSize: '0.78rem', cursor: 'pointer', fontFamily: 'inherit',
+            }}>
+              Cancel
+            </button>
+            <style>{`@keyframes pulse{0%,100%{opacity:0.15;transform:scale(0.8)}50%{opacity:0.8;transform:scale(1.2)}}`}</style>
+          </div>
+        );
+      })()}
+
+      {screen === 'trial' && (
+        <TrialScreen
+          playerName={playerName}
+          playerColor={playerColor}
+          onComplete={handleTrialComplete}
+          onBack={() => setScreen('home')}
+        />
       )}
 
       {screen === 'game' && config && socketRef.current && (
@@ -195,6 +400,16 @@ export default function App() {
           solo={!!config.solo}
           stakeId={config.stakeId}
           onPlayAgain={handlePlayAgain}
+        />
+      )}
+
+      {showDeposit && firebaseUser && (
+        <DepositModal
+          user={firebaseUser}
+          onClose={() => setShowDeposit(false)}
+          onSuccess={(creditCents) => {
+            if (creditCents > 0) setBalance(b => b + creditCents);
+          }}
         />
       )}
     </div>
