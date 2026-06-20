@@ -259,10 +259,9 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
             How to play
           </div>
           {[
-            { dot: '#22d3ee', label: 'APPROACH', desc: 'Ring shrinks in — click when it reaches the target' },
-            { dot: '#fb923c', label: 'DELAY',    desc: 'Ring expands out — wait for it to open fully, then click' },
-            { dot: '#ff4444', label: 'DECOY',    desc: 'Red ✕ is a trap — avoid it or lose time' },
-            { dot: '#ffd700', label: 'STREAK',   desc: 'Hit without missing — green → cyan → purple → gold' },
+            { dot: '#22d3ee', label: 'CLICK',  desc: 'Ring shrinks in — click the numbered circle when the ring hits it' },
+            { dot: '#ff4444', label: 'DECOY',  desc: 'Red ✕ is a trap — avoid it or lose time' },
+            { dot: '#ffd700', label: 'STREAK', desc: 'Hit without missing — green → cyan → purple → gold' },
           ].map(({ dot, label, desc }) => (
             <div key={label} style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
               <div style={{
