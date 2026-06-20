@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { doc, getDoc, setDoc, addDoc, collection, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, setDoc, addDoc, collection, serverTimestamp, increment } from 'firebase/firestore';
 import { auth, db } from './services/firebase';
 import HomeScreen from './components/HomeScreen';
 import WaitingScreen from './components/WaitingScreen';
@@ -43,8 +43,7 @@ export default function App() {
   const [trialComplete, setTrialComplete] = useState(false);
   const [isDev, setIsDev] = useState(false);
   const [soloRunsToday, setSoloRunsToday] = useState(0);
-  const [elo, setElo]               = useState(1000);
-  const [opponentElo, setOpponentElo] = useState(1000);
+  const [points, setPoints]         = useState(0);
   const [winStreak, setWinStreak]   = useState(0);
   const [lossStreak, setLossStreak] = useState(0);
   const [challengeProgress, setChallengeProgress] = useState(0);
@@ -67,7 +66,7 @@ export default function App() {
         if (data.isDev) setIsDev(true);
         const today = new Date().toISOString().slice(0, 10);
         if (data.soloRunsDate === today) setSoloRunsToday(data.soloRunsToday ?? 0);
-        setElo(data.elo ?? 1000);
+        setPoints(data.points ?? 0);
         setWinStreak(data.winStreak ?? 0);
         setLossStreak(data.lossStreak ?? 0);
         if (data.dailyChallengeDate === today) {
@@ -103,7 +102,6 @@ export default function App() {
     const sock = getSocket();
 
     sock.on('reflex:matched', (data: any) => {
-      if (data.opponentElo) setOpponentElo(data.opponentElo);
       setGameConfig(prev => prev ? {
         ...prev,
         roomCode: data.roomCode,
@@ -150,7 +148,7 @@ export default function App() {
     if (firebaseUser) {
       try { idToken = await firebaseUser.getIdToken(); } catch { /* no-op */ }
     }
-    sock.emit('reflex:queue', { name, color, stakeId, idToken, elo }, (res: any) => {
+    sock.emit('reflex:queue', { name, color, stakeId, idToken }, (res: any) => {
       if (res && !res.ok) {
         if (res.error === 'insufficient_balance') {
           alert('Not enough PC for this tier. Add PC from your account page.');
@@ -203,17 +201,19 @@ export default function App() {
     setResultData(result);
     setScreen('result');
     if (firebaseUser && !gameConfig?.solo) {
-      const K = 32;
-      const expected = 1 / (1 + Math.pow(10, (opponentElo - elo) / 400));
-      const score = result.won ? 1 : 0;
-      const newElo  = Math.max(100, Math.round(elo + K * (score - expected)));
       const newWin  = result.won ? winStreak + 1 : 0;
       const newLoss = !result.won ? lossStreak + 1 : 0;
-      setElo(newElo);
       setWinStreak(newWin);
       setLossStreak(newLoss);
+
+      const isPaid = gameConfig?.stakeId && !['free', 'practice'].includes(gameConfig.stakeId);
+      const pointsEarned = result.won && isPaid ? 20 : 0;
+      if (pointsEarned > 0) {
+        setPoints(p => p + pointsEarned);
+        setDoc(doc(db, 'users', firebaseUser.uid), { points: increment(pointsEarned) }, { merge: true }).catch(console.error);
+      }
       setDoc(doc(db, 'users', firebaseUser.uid), {
-        elo: newElo, winStreak: newWin, lossStreak: newLoss,
+        winStreak: newWin, lossStreak: newLoss,
       }, { merge: true }).catch(console.error);
 
       addDoc(collection(db, 'users', firebaseUser.uid, 'matches'), {
@@ -222,7 +222,7 @@ export default function App() {
         stakeId: gameConfig?.stakeId ?? 'free',
         payoutCents: result.won ? (gameConfig?.payoutCents ?? 0) : 0,
         opponent: gameConfig?.opponentName ?? 'Opponent',
-        eloChange: newElo - elo,
+        pointsEarned,
         createdAt: serverTimestamp(),
       }).catch(console.error);
 
@@ -297,7 +297,7 @@ export default function App() {
           isLoggedIn={!!firebaseUser}
           soloRunsToday={firebaseUser ? soloRunsToday : undefined}
           isDev={isDev}
-          elo={firebaseUser ? elo : undefined}
+          points={firebaseUser ? points : undefined}
           winStreak={winStreak}
           lossStreak={lossStreak}
           challenge={firebaseUser ? getDailyChallenge() : undefined}

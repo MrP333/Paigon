@@ -52,21 +52,22 @@ const BG_CIRCLES = [
   { x:'88%', y:'52%',  r:16, color:'#22d3ee', float:'rc-float-c', dur:12, ringDur:3.0, delay:2.2  },
 ];
 
-function getRank(elo: number): { label: string; color: string } {
-  if (elo >= 1600) return { label: 'LEGEND',  color: '#ef4444' };
-  if (elo >= 1400) return { label: 'GHOST',   color: '#a855f7' };
-  if (elo >= 1200) return { label: 'ELITE',   color: '#ffa020' };
-  if (elo >= 1000) return { label: 'VETERAN', color: '#22c55e' };
-  if (elo >= 800)  return { label: 'SOLDIER', color: '#22d3ee' };
-  return               { label: 'RECRUIT', color: '#94a3b8' };
+function getRank(pts: number): { label: string; color: string } {
+  if (pts >= 25000) return { label: 'LEGEND',    color: '#ef4444' };
+  if (pts >= 12000) return { label: 'ELITE',     color: '#f59e0b' };
+  if (pts >= 5000)  return { label: 'EXPERT',    color: '#a855f7' };
+  if (pts >= 2000)  return { label: 'VETERAN',   color: '#22d3ee' };
+  if (pts >= 750)   return { label: 'SKILLED',   color: '#00ff88' };
+  if (pts >= 200)   return { label: 'CONTENDER', color: '#60a5fa' };
+  return                   { label: 'RECRUIT',   color: '#94a3b8' };
 }
 
 const TIERS = [
   { id: 'free',     label: 'Free',     entryCents: 0,    payoutCents: 0,    desc: 'No entry fee' },
-  { id: 'quick',    label: 'Quick',    entryCents: 50,   payoutCents: 98,   desc: '50¢ entry · 98¢ payout' },
-  { id: 'standard', label: 'Standard', entryCents: 200,  payoutCents: 392,  desc: '$2 entry · $3.92 payout' },
-  { id: 'high',     label: 'High',     entryCents: 1000, payoutCents: 1960, desc: '$10 entry · $19.60 payout' },
-  { id: 'elite',    label: 'Elite',    entryCents: 5000, payoutCents: 9800, desc: '$50 entry · $98 payout' },
+  { id: 'quick',    label: '5 PC',    entryCents: 50,   payoutCents: 98,   desc: 'win 9.8 PC' },
+  { id: 'standard', label: '20 PC',   entryCents: 200,  payoutCents: 392,  desc: 'win 39.2 PC' },
+  { id: 'high',     label: '100 PC',  entryCents: 1000, payoutCents: 1960, desc: 'win 196 PC' },
+  { id: 'elite',    label: '500 PC',  entryCents: 5000, payoutCents: 9800, desc: 'win 980 PC' },
 ];
 
 function pc(cents: number) { return (cents / 10).toFixed(0) + ' PC'; }
@@ -90,7 +91,7 @@ interface Props {
   isLoggedIn?: boolean;
   soloRunsToday?: number;
   isDev?: boolean;
-  elo?: number;
+  points?: number;
   winStreak?: number;
   lossStreak?: number;
   challenge?: DailyChallengeData;
@@ -99,7 +100,7 @@ interface Props {
   onClaimChallenge?: () => void;
 }
 
-export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete, playerName: savedName, playerColor: savedColor, balance = 0, isLoggedIn, soloRunsToday, isDev, elo, winStreak = 0, lossStreak = 0, challenge, challengeProgress = 0, challengeClaimed = false, onClaimChallenge }: Props) {
+export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete, playerName: savedName, playerColor: savedColor, balance = 0, isLoggedIn, soloRunsToday, isDev, points, winStreak = 0, lossStreak = 0, challenge, challengeProgress = 0, challengeClaimed = false, onClaimChallenge }: Props) {
   const color = savedColor ?? '#22d3ee';
   const [selectedTier, setSelectedTier] = useState('free');
   const runsLeft = SOLO_DAILY_LIMIT - (soloRunsToday ?? 0);
@@ -197,16 +198,19 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
       {/* Top bar — rank + wallet */}
       {isLoggedIn && (
         <div style={{ position: 'absolute', top: 18, right: 20, display: 'flex', alignItems: 'center', gap: 10, zIndex: 2 }}>
-          {elo !== undefined && (() => { const r = getRank(elo); return (
+          {points !== undefined && (() => { const r = getRank(points); return (
             <div style={{ fontSize: '0.62rem', fontWeight: 800, color: r.color, letterSpacing: '0.1em', opacity: 0.9 }}>
-              {r.label} · {elo}
+              {r.label} · {points.toLocaleString()} pts
             </div>
           ); })()}
-          <a href="/account.html" style={{ fontSize: '0.75rem', fontWeight: 700, color: '#ffa020', textDecoration: 'none' }}>
+          <a href="/account.html" style={{
+            display: 'inline-flex', alignItems: 'center',
+            background: 'rgba(0,255,136,0.08)', border: '1px solid rgba(0,255,136,0.22)',
+            borderRadius: 999, padding: '4px 12px',
+            color: '#00ff88', fontSize: '0.7rem', fontWeight: 800,
+            letterSpacing: '0.04em', textDecoration: 'none', fontFamily: 'inherit',
+          }}>
             {Math.floor(balance / 10)} PC
-          </a>
-          <a href="/account.html" style={{ fontSize: '0.65rem', fontWeight: 800, color: '#ffa020', background: 'rgba(255,160,32,0.1)', border: '1px solid rgba(255,160,32,0.3)', borderRadius: 20, padding: '3px 10px', textDecoration: 'none' }}>
-            + Add PC
           </a>
         </div>
       )}
