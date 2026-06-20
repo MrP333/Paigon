@@ -15,6 +15,11 @@ const TIMEOUT_PENALTY_MS = 800;
 const DECOY_PENALTY_MS   = 600;
 const HIT_TOLERANCE      = TARGET_R + 16;
 
+// Points per hit: 100 if clicked instantly, 10 if clicked at the last moment
+function calcPoints(reactionAfterCharge: number): number {
+  return Math.round(10 + 90 * Math.max(0, 1 - reactionAfterCharge / TIME_LIMIT_MS));
+}
+
 // Four neon colors that cycle per target index
 const NEON_COLORS = ['#22d3ee', '#a855f7', '#ec4899', '#10b981'];
 function getTargetColor(index: number): string {
@@ -308,7 +313,7 @@ function drawFloaters(ctx: CanvasRenderingContext2D, floaters: Floater[], now: n
     ctx.textBaseline = 'middle';
     ctx.shadowColor = f.color;
     ctx.shadowBlur  = 8;
-    ctx.fillText('+1', f.x, f.y - 48 * ease);
+    ctx.fillText((f as any).pts ? `+${(f as any).pts}` : '+1', f.x, f.y - 48 * ease);
     ctx.restore();
   }
 }
@@ -341,14 +346,14 @@ export default function GameScreen({ config, socket, onResult }: Props) {
   const [opponentHits, setOpponentHits] = useState(0);
   const [timeLeft, setTimeLeft]         = useState(GAME_DURATION_MS / 1000);
   const [hitDisplay, setHitDisplay]     = useState(0);
-  const [penaltyMs, setPenaltyMs]       = useState(0);
+  const [scoreDisplay, setScoreDisplay] = useState(0);
   const [streak, setStreak]             = useState(0);
 
   const phaseRef        = useRef<string>('countdown');
   const currentIdxRef   = useRef(0);
   const appearTimeRef   = useRef(0);
   const startTimeRef    = useRef(0);
-  const penaltyRef      = useRef(0);
+  const scoreRef        = useRef(0);
   const effectsRef      = useRef<CanvasEffect[]>([]);
   const hitsRef         = useRef<HitRecord[]>([]);
   const hitCountRef     = useRef(0);
@@ -399,6 +404,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
       setTimeLeft(leftSecs);
       timeLeftRef.current = leftSecs;
       setHitDisplay(hitCountRef.current);
+      setScoreDisplay(scoreRef.current);
       if (left <= 0) endGame();
     }, 50);
     return () => clearInterval(id);
@@ -435,7 +441,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
     const total = GAME_DURATION_MS;
     myFinalTimeRef.current  = total;
-    const score = hitCountRef.current * 1000 - Math.floor(total / 10);
+    const score = scoreRef.current;
     myFinalScoreRef.current = score;
     if (config.solo) {
       phaseRef.current = 'done'; setPhase('done');
@@ -451,8 +457,6 @@ export default function GameScreen({ config, socket, onResult }: Props) {
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
     timeoutRef.current = setTimeout(() => {
       if (phaseRef.current !== 'playing') return;
-      penaltyRef.current += TIMEOUT_PENALTY_MS;
-      setPenaltyMs((p: number) => p + TIMEOUT_PENALTY_MS);
       streakRef.current = 0;
       setStreak(0);
       const t = targets[currentIdxRef.current];
@@ -490,8 +494,6 @@ export default function GameScreen({ config, socket, onResult }: Props) {
     const currentDecoys = decoysRef.current[currentIdxRef.current] || [];
     const hitDecoy = currentDecoys.find((d: Decoy) => Math.hypot(cx - d.x, cy - d.y) <= DECOY_R + 8);
     if (hitDecoy) {
-      penaltyRef.current += DECOY_PENALTY_MS;
-      setPenaltyMs((p: number) => p + DECOY_PENALTY_MS);
       streakRef.current = 0;
       setStreak(0);
       effectsRef.current.push({ x: hitDecoy.x, y: hitDecoy.y, type: 'decoy', startTime: now });
@@ -503,19 +505,19 @@ export default function GameScreen({ config, socket, onResult }: Props) {
 
     // Miss — clicked but not on the target
     if (Math.hypot(cx - t.x, cy - t.y) > HIT_TOLERANCE) {
-      penaltyRef.current += 200;
-      setPenaltyMs((p: number) => p + 200);
       streakRef.current = 0;
       setStreak(0);
       effectsRef.current.push({ x: cx, y: cy, type: 'miss', startTime: now });
       return;
     }
 
-    // Valid hit
+    // Valid hit — score based on reaction speed
+    const pts = calcPoints(elapsed - CHARGE_MS);
     streakRef.current++;
     setStreak(streakRef.current);
     const hitColor = streakColor(streakRef.current);
     hitCountRef.current++;
+    scoreRef.current += pts;
     hitsRef.current.push({ targetIndex: currentIdxRef.current, reactionMs: elapsed });
     if (!config.solo) {
       socket.emit('reflex:hit', { roomCode: config.roomCode, targetIndex: currentIdxRef.current, reactionMs: elapsed });
@@ -523,7 +525,9 @@ export default function GameScreen({ config, socket, onResult }: Props) {
     const fx = { x: t.x, y: t.y, type: 'hit' as const, startTime: now };
     (fx as any).color = hitColor;
     effectsRef.current.push(fx);
-    floatersRef.current.push({ x: t.x, y: t.y, startTime: now, color: hitColor });
+    const floater = { x: t.x, y: t.y, startTime: now, color: hitColor };
+    (floater as any).pts = pts;
+    floatersRef.current.push(floater);
     flashRef.current = { startTime: now, color: hitColor };
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
     advanceTarget(now);
@@ -589,7 +593,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
         transition: 'border-color 0.3s',
       }}>
 
-        {/* Left: hits + streak */}
+        {/* Left: score + hits + streak */}
         <div style={{ minWidth: 130, display: 'flex', flexDirection: 'column', gap: 2 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
             <span style={{
@@ -599,10 +603,10 @@ export default function GameScreen({ config, socket, onResult }: Props) {
               textShadow: streak >= 3 ? `0 0 18px ${sColor}99` : 'none',
               transition: 'color 0.2s, text-shadow 0.2s',
             }}>
-              {hitDisplay}
+              {scoreDisplay}
             </span>
             <span style={{ fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.12em', color: 'rgba(255,255,255,0.3)', textTransform: 'uppercase' }}>
-              HITS
+              PTS
             </span>
           </div>
           {streakLabel ? (
@@ -613,11 +617,11 @@ export default function GameScreen({ config, socket, onResult }: Props) {
             }}>
               {streak}× {streakLabel}
             </span>
-          ) : penaltyMs > 0 ? (
-            <span style={{ fontSize: '0.6rem', color: '#ff6b6b', fontWeight: 600 }}>
-              -{(penaltyMs / 1000).toFixed(1)}s pen
+          ) : (
+            <span style={{ fontSize: '0.6rem', color: 'rgba(255,255,255,0.25)', fontWeight: 600 }}>
+              {hitDisplay} hits
             </span>
-          ) : null}
+          )}
         </div>
 
         {/* Center: timer */}
