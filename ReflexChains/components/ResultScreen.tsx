@@ -186,13 +186,13 @@ export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
 
           <div style={{ background: 'rgba(255,255,255,0.025)', borderRadius: 14, border: '1px solid rgba(255,255,255,0.06)', padding: '16px 20px', animation: 'paigon-stat 0.35s 0.55s both' }}>
             <StatRow label="Targets hit" value={`${myHits}`} highlight delay={0.6} />
-            <StatRow label="Time" value={fmtTime(myTimeMs)} delay={0.65} />
+            <StatRow label="Avg pts / hit" value={myHits > 0 ? `${Math.round(myScore / myHits)}` : '—'} delay={0.65} />
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 7, animation: `paigon-stat 0.35s 0.7s both` }}>
               <span style={{ fontSize: '0.62rem', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.3)' }}>
-                Score formula
+                Scoring
               </span>
               <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'rgba(255,255,255,0.25)', fontFamily: 'monospace' }}>
-                hits×1000 − time/10
+                10–100 pts per hit
               </span>
             </div>
           </div>
@@ -307,14 +307,14 @@ export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
                 ))}
               </div>
               <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'rgba(255,255,255,0.3)', fontVariantNumeric: 'tabular-nums' }}>
-                {r.hits ?? '?'} hits · {fmtTime(r.timeMs)}
+                {r.hits ?? '?'} hits · {r.hits && r.score ? `${Math.round(r.score / r.hits)} avg` : '—'}
               </div>
             </div>
           ))}
         </div>
 
         <div style={{ fontSize: '0.62rem', color: 'rgba(255,255,255,0.15)', letterSpacing: '0.06em', marginTop: -8, animation: 'paigon-stat 0.35s 0.7s both' }}>
-          Score = hits × 1000 − time_ms / 10 · Wild misses add +0.2s penalty
+          10–100 pts per hit · faster reaction = higher score
         </div>
 
         <button
