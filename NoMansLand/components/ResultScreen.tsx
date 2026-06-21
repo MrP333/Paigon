@@ -1,4 +1,46 @@
 import { ResultData } from '../types';
+import { useEffect, useMemo, useState } from 'react';
+
+const CSS = `
+@keyframes paigon-card-in {
+  0%   { opacity:0; transform:scale(0.82) translateY(28px); }
+  65%  { opacity:1; transform:scale(1.03) translateY(-5px); }
+  100% { opacity:1; transform:scale(1) translateY(0); }
+}
+@keyframes paigon-hl {
+  0%,100% { filter:brightness(1) drop-shadow(0 0 18px currentColor); }
+  50%      { filter:brightness(1.35) drop-shadow(0 0 40px currentColor) drop-shadow(0 0 80px currentColor); }
+}
+@keyframes paigon-shake {
+  0%,100%{transform:translateX(0)}20%{transform:translateX(-9px)}40%{transform:translateX(9px)}60%{transform:translateX(-6px)}80%{transform:translateX(6px)}
+}
+@keyframes paigon-stat {
+  from { opacity:0; transform:translateX(-12px); }
+  to   { opacity:1; transform:translateX(0); }
+}
+@keyframes paigon-pt {
+  0%   { opacity:1; transform:translate(-50%,-50%) scale(1); }
+  100% { opacity:0; transform:translate(calc(-50% + var(--px)),calc(-50% + var(--py))) scale(0.1) rotate(var(--pr)); }
+}
+@keyframes paigon-btn-glow {
+  0%,100% { box-shadow:0 0 22px var(--bc),0 4px 14px var(--bc); }
+  50%      { box-shadow:0 0 55px var(--bc),0 0 100px var(--bc)66; }
+}
+@keyframes paigon-scale-in {
+  from { opacity:0; transform:scale(0.88); }
+  to   { opacity:1; transform:scale(1); }
+}
+@keyframes paigon-flash {
+  0%   { opacity:0.55; }
+  100% { opacity:0; }
+}
+@keyframes paigon-scanline {
+  0%   { top:-2px; opacity:0; }
+  3%   { opacity:0.6; }
+  97%  { opacity:0.6; }
+  100% { top:100%; opacity:0; }
+}
+`;
 
 interface Props {
   result: ResultData;
@@ -12,136 +54,266 @@ function fmt(ms: number | null) {
   if (ms === null) return '—';
   return (ms / 1000).toFixed(2) + 's';
 }
-
 function pcLabel(cents: number) {
   const pc = cents / 10;
   return (Number.isInteger(pc) ? pc.toString() : pc.toFixed(1)) + ' PC';
+}
+
+interface PInfo { px: string; py: string; pr: string; w: number; h: number; color: string; delay: number; dur: number; br: string; }
+function makeParticles(c1: string, c2: string, n: number): PInfo[] {
+  return Array.from({ length: n }, (_, i) => {
+    const a = (i / n) * Math.PI * 2 + (Math.random() - 0.5) * 0.7;
+    const d = 75 + Math.random() * 145;
+    const pal = [c1, c2, '#fff', c1 + 'bb'];
+    return {
+      px: `${Math.cos(a) * d}px`, py: `${Math.sin(a) * d}px`,
+      pr: `${(Math.random() - 0.5) * 720}deg`,
+      w: 3 + Math.random() * 9, h: 3 + Math.random() * 6,
+      color: pal[Math.floor(Math.random() * pal.length)],
+      delay: Math.random() * 0.35, dur: 0.5 + Math.random() * 0.55,
+      br: Math.random() > 0.45 ? '50%' : '2px',
+    };
+  });
+}
+
+function Particles({ c1, c2, n = 28 }: { c1: string; c2: string; n?: number }) {
+  const pts = useMemo(() => makeParticles(c1, c2, n), []);
+  return (
+    <div style={{ position: 'absolute', left: '50%', top: '38%', pointerEvents: 'none', zIndex: 0 }}>
+      {pts.map((p, i) => (
+        <div key={i} style={{
+          position: 'absolute', width: p.w, height: p.h, borderRadius: p.br, background: p.color,
+          '--px': p.px, '--py': p.py, '--pr': p.pr,
+          animation: `paigon-pt ${p.dur}s ${p.delay}s ease-out both`,
+        } as React.CSSProperties} />
+      ))}
+    </div>
+  );
+}
+
+function useCountUp(target: number | null, delay = 500) {
+  const [val, setVal] = useState(0);
+  useEffect(() => {
+    if (target === null) return;
+    const n = target;
+    const t = setTimeout(() => {
+      const dur = 1000;
+      const start = performance.now();
+      function tick() {
+        const p = Math.min((performance.now() - start) / dur, 1);
+        const eased = 1 - Math.pow(1 - p, 3);
+        setVal(Math.floor(eased * n));
+        if (p < 1) requestAnimationFrame(tick);
+        else setVal(n);
+      }
+      requestAnimationFrame(tick);
+    }, delay);
+    return () => clearTimeout(t);
+  }, [target]);
+  return val;
 }
 
 export default function ResultScreen({ result, playerName, solo, stakeId, onPlayAgain }: Props) {
   const { won, draw, myTimeMs, opponentTimeMs, winnerName, payoutCents, entryCents } = result;
   const isPaid = stakeId && stakeId !== 'free' && (entryCents ?? 0) > 0;
 
-  let headline: string;
-  let headlineColor: string;
-  let sub: string;
+  useEffect(() => {
+    if (document.getElementById('paigon-result-css')) return;
+    const el = document.createElement('style');
+    el.id = 'paigon-result-css';
+    el.textContent = CSS;
+    document.head.appendChild(el);
+  }, []);
 
+  // Animate crossing time count-up (counts up to the actual ms value)
+  const animatedMyTime  = useCountUp(myTimeMs,       600);
+  const animatedOppTime = useCountUp(opponentTimeMs, 700);
+
+  let headline: string, hc: string, sub: string, isWin: boolean;
   if (solo) {
     if (myTimeMs !== null) {
-      headline = 'CROSSED';
-      headlineColor = '#00ff88';
-      sub = 'You made it across No Man\'s Land';
+      headline = 'CROSSED'; hc = '#00ff88'; sub = "You made it across No Man's Land"; isWin = true;
     } else {
-      headline = 'K.I.A.';
-      headlineColor = '#ff3333';
-      sub = 'You didn\'t make it — try again';
+      headline = 'K.I.A.'; hc = '#ff3333'; sub = "You were cut down — try again"; isWin = false;
     }
   } else if (draw) {
-    headline = 'DRAW';
-    headlineColor = '#ffaa00';
-    sub = 'Both soldiers fell in No Man\'s Land';
+    headline = 'DRAW'; hc = '#ffaa00'; sub = "Both soldiers fell in No Man's Land"; isWin = false;
   } else if (won) {
-    headline = 'VICTORY';
-    headlineColor = '#00ff88';
-    sub = 'First to the enemy trench';
+    headline = 'VICTORY'; hc = '#00ff88'; sub = 'First to the enemy trench'; isWin = true;
   } else {
-    headline = 'DEFEATED';
-    headlineColor = '#ff3333';
-    sub = myTimeMs === null ? 'You were cut down in No Man\'s Land' : `${winnerName} crossed first`;
+    headline = 'DEFEATED'; hc = '#ff3333';
+    sub = myTimeMs === null ? "You were cut down in No Man's Land" : `${winnerName} crossed first`;
+    isWin = false;
   }
+
+  const hlAnim = headline === 'K.I.A.' || headline === 'DEFEATED'
+    ? 'paigon-shake 0.55s 0.45s both'
+    : `paigon-hl 2.5s 0.7s ease-in-out infinite`;
+
+  const bgGlow = isWin
+    ? 'radial-gradient(ellipse 100% 80% at 50% 30%, rgba(0,255,136,0.11) 0%, transparent 65%), radial-gradient(ellipse 60% 40% at 80% 80%, rgba(251,191,36,0.06) 0%, transparent 55%), #03030a'
+    : draw
+    ? 'radial-gradient(ellipse 90% 70% at 50% 35%, rgba(255,170,0,0.09) 0%, transparent 65%), #03030a'
+    : 'radial-gradient(ellipse 100% 80% at 50% 30%, rgba(255,40,40,0.1) 0%, transparent 65%), radial-gradient(ellipse 50% 35% at 20% 80%, rgba(200,30,30,0.06) 0%, transparent 50%), #03030a';
 
   return (
     <div style={{
-      width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
-      alignItems: 'center', justifyContent: 'center',
-      background: '#03030a', gap: 0,
+      width: '100%', height: '100%',
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      background: bgGlow, position: 'relative', overflow: 'hidden',
     }}>
+      <Particles c1={hc} c2={isWin ? '#ffd700' : draw ? '#ffaa00' : '#ff6b6b'} n={isWin ? 36 : draw ? 16 : 20} />
+
+      {/* Scanline */}
       <div style={{
-        fontSize: '0.65rem', fontWeight: 700, letterSpacing: '0.3em',
-        textTransform: 'uppercase', color: 'rgba(255,255,255,0.2)', marginBottom: 24,
-      }}>
-        No Man's Land · Result
-      </div>
+        position: 'absolute', left: 0, right: 0, height: 1, pointerEvents: 'none', zIndex: 0,
+        background: `linear-gradient(90deg, transparent, ${hc}55 40%, ${hc}99 50%, ${hc}55 60%, transparent)`,
+        animation: 'paigon-scanline 4s linear infinite',
+      }} />
+
+      {/* Screen flash on load */}
+      <div style={{
+        position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0,
+        background: isWin ? 'rgba(0,255,136,0.06)' : 'rgba(255,40,40,0.06)',
+        animation: 'paigon-flash 0.6s 0.15s both',
+      }} />
 
       <div style={{
-        fontSize: 'clamp(2.4rem, 8vw, 4rem)', fontWeight: 900,
-        letterSpacing: '0.1em', color: headlineColor,
-        textShadow: `0 0 60px ${headlineColor}55`,
-        marginBottom: 8,
+        position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0,
+        backgroundImage: 'repeating-linear-gradient(transparent,transparent 2px,rgba(0,0,0,0.022) 2px,rgba(0,0,0,0.022) 4px)',
+      }} />
+
+      <div style={{
+        position: 'relative', zIndex: 1,
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+        animation: 'paigon-card-in 0.55s cubic-bezier(0.34,1.56,0.64,1) both',
+        padding: '0 20px', maxWidth: 480, width: '100%',
       }}>
-        {headline}
-      </div>
-      <div style={{ fontSize: '0.82rem', color: 'rgba(255,255,255,0.35)', marginBottom: 28 }}>
-        {sub}
-      </div>
-
-      {/* Payout card — only for paid matches */}
-      {isPaid && !solo && (
         <div style={{
-          marginBottom: 24, padding: '14px 28px', borderRadius: 12,
-          border: won ? '1px solid rgba(0,255,136,0.25)' : '1px solid rgba(255,255,255,0.08)',
-          background: won ? 'rgba(0,255,136,0.07)' : 'rgba(255,255,255,0.03)',
-          display: 'flex', gap: 32, textAlign: 'center',
+          fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.32em',
+          textTransform: 'uppercase', color: 'rgba(255,255,255,0.15)', marginBottom: 16,
+          animation: 'paigon-stat 0.4s 0.2s both',
         }}>
-          {won && payoutCents ? (
-            <div>
-              <div style={{ fontSize: '0.58rem', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.3)', marginBottom: 4 }}>Won</div>
-              <div style={{ fontSize: '1.5rem', fontWeight: 900, color: '#00ff88' }}>+{pcLabel(payoutCents)}</div>
-            </div>
-          ) : (
-            <div>
-              <div style={{ fontSize: '0.58rem', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.3)', marginBottom: 4 }}>Lost</div>
-              <div style={{ fontSize: '1.5rem', fontWeight: 900, color: '#ff3333' }}>-{pcLabel(entryCents ?? 0)}</div>
-            </div>
-          )}
-          {entryCents ? (
-            <div>
-              <div style={{ fontSize: '0.58rem', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.3)', marginBottom: 4 }}>Staked</div>
-              <div style={{ fontSize: '1.5rem', fontWeight: 900, color: 'rgba(255,255,255,0.5)' }}>{pcLabel(entryCents)}</div>
-            </div>
-          ) : null}
-        </div>
-      )}
-
-      {/* Time cards */}
-      <div style={{ display: 'flex', gap: 12, marginBottom: 36 }}>
-        <div style={{
-          background: 'rgba(255,255,255,0.04)', border: `1px solid ${won || (solo && myTimeMs !== null) ? 'rgba(0,255,136,0.2)' : 'rgba(255,255,255,0.08)'}`,
-          borderRadius: 12, padding: '18px 28px', textAlign: 'center', minWidth: 120,
-        }}>
-          <div style={{ fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.3)', marginBottom: 8 }}>
-            {solo ? 'Your Time' : playerName}
-          </div>
-          <div style={{ fontSize: '1.6rem', fontWeight: 800, color: myTimeMs !== null ? '#fff' : '#ff3333', letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums' }}>
-            {myTimeMs !== null ? fmt(myTimeMs) : 'KIA'}
-          </div>
+          No Man's Land · Result
         </div>
 
-        {!solo && (
+        {/* Main headline */}
+        <div style={{
+          fontSize: 'clamp(3.2rem,11vw,5.5rem)', fontWeight: 900,
+          letterSpacing: '0.1em', color: hc,
+          textShadow: `0 0 80px ${hc}66, 0 0 160px ${hc}33`,
+          animation: hlAnim, marginBottom: 6, lineHeight: 1,
+        }}>
+          {headline}
+        </div>
+
+        <div style={{
+          fontSize: '0.8rem', color: 'rgba(255,255,255,0.3)', marginBottom: 24,
+          animation: 'paigon-stat 0.4s 0.35s both', letterSpacing: '0.04em',
+        }}>
+          {sub}
+        </div>
+
+        {/* Payout row */}
+        {isPaid && !solo && (
           <div style={{
-            background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)',
-            borderRadius: 12, padding: '18px 28px', textAlign: 'center', minWidth: 120,
+            marginBottom: 20, padding: '12px 28px', borderRadius: 14,
+            border: `1px solid ${won ? 'rgba(0,255,136,0.3)' : 'rgba(255,255,255,0.07)'}`,
+            background: won ? 'rgba(0,255,136,0.07)' : 'rgba(255,255,255,0.025)',
+            display: 'flex', gap: 28, textAlign: 'center',
+            boxShadow: won ? '0 0 40px rgba(0,255,136,0.12)' : 'none',
+            animation: 'paigon-scale-in 0.4s 0.45s both',
           }}>
-            <div style={{ fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.3)', marginBottom: 8 }}>
-              Opponent
-            </div>
-            <div style={{ fontSize: '1.6rem', fontWeight: 800, color: 'rgba(255,255,255,0.6)', letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums' }}>
-              {opponentTimeMs !== null ? fmt(opponentTimeMs) : 'KIA'}
-            </div>
+            {won && payoutCents ? (
+              <div>
+                <div style={{ fontSize: '0.54rem', fontWeight: 700, letterSpacing: '0.18em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.25)', marginBottom: 5 }}>Won</div>
+                <div style={{ fontSize: '1.9rem', fontWeight: 900, color: '#00ff88', textShadow: '0 0 32px rgba(0,255,136,0.6)', letterSpacing: '-0.02em' }}>+{pcLabel(payoutCents)}</div>
+              </div>
+            ) : (
+              <div>
+                <div style={{ fontSize: '0.54rem', fontWeight: 700, letterSpacing: '0.18em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.25)', marginBottom: 5 }}>Lost</div>
+                <div style={{ fontSize: '1.9rem', fontWeight: 900, color: '#ff4444', textShadow: '0 0 28px rgba(255,68,68,0.45)', letterSpacing: '-0.02em' }}>-{pcLabel(entryCents ?? 0)}</div>
+              </div>
+            )}
+            {entryCents ? (
+              <div>
+                <div style={{ fontSize: '0.54rem', fontWeight: 700, letterSpacing: '0.18em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.25)', marginBottom: 5 }}>Staked</div>
+                <div style={{ fontSize: '1.9rem', fontWeight: 900, color: 'rgba(255,255,255,0.4)', letterSpacing: '-0.02em' }}>{pcLabel(entryCents)}</div>
+              </div>
+            ) : null}
           </div>
         )}
-      </div>
 
-      <button onClick={onPlayAgain} style={{
-        padding: '13px 40px', borderRadius: 10, border: 'none',
-        background: headlineColor, color: headlineColor === '#ff3333' ? '#fff' : '#000',
-        fontSize: '0.88rem', fontWeight: 800, letterSpacing: '0.04em',
-        cursor: 'pointer', fontFamily: 'inherit',
-        boxShadow: `0 0 28px ${headlineColor}44`,
-        transition: 'all 0.15s',
-      }}>
-        Play Again →
-      </button>
+        {/* Time cards */}
+        <div style={{ display: 'flex', gap: 10, marginBottom: 28, width: '100%', justifyContent: 'center', animation: 'paigon-stat 0.4s 0.5s both' }}>
+          <div style={{
+            flex: 1, maxWidth: 180,
+            background: won || (solo && myTimeMs !== null) ? `${hc}0d` : 'rgba(255,255,255,0.03)',
+            border: `1px solid ${won || (solo && myTimeMs !== null) ? hc + '40' : 'rgba(255,255,255,0.07)'}`,
+            borderRadius: 14, padding: '16px 20px', textAlign: 'center',
+            boxShadow: won || (solo && myTimeMs !== null) ? `0 0 28px ${hc}18` : 'none',
+          }}>
+            <div style={{ fontSize: '0.58rem', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.25)', marginBottom: 10 }}>
+              {solo ? 'Your Time' : playerName}
+            </div>
+            <div style={{
+              fontSize: '2rem', fontWeight: 900, letterSpacing: '-0.03em', fontVariantNumeric: 'tabular-nums', lineHeight: 1,
+              color: myTimeMs !== null ? (won || solo ? hc : 'rgba(255,255,255,0.7)') : '#ff4444',
+              textShadow: myTimeMs !== null && (won || solo) ? `0 0 24px ${hc}88` : 'none',
+            }}>
+              {myTimeMs !== null ? fmt(animatedMyTime) : 'KIA'}
+            </div>
+            {myTimeMs !== null && (won || solo) && (
+              <div style={{ fontSize: '0.58rem', color: hc, fontWeight: 700, marginTop: 6, letterSpacing: '0.08em', opacity: 0.7 }}>
+                ★ FASTEST
+              </div>
+            )}
+          </div>
+
+          {!solo && (
+            <div style={{
+              flex: 1, maxWidth: 180,
+              background: !won && !draw ? `rgba(0,255,136,0.06)` : 'rgba(255,255,255,0.025)',
+              border: `1px solid ${!won && !draw ? 'rgba(0,255,136,0.25)' : 'rgba(255,255,255,0.06)'}`,
+              borderRadius: 14, padding: '16px 20px', textAlign: 'center',
+              boxShadow: !won && !draw ? '0 0 24px rgba(0,255,136,0.1)' : 'none',
+            }}>
+              <div style={{ fontSize: '0.58rem', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.25)', marginBottom: 10 }}>
+                {winnerName || 'Opponent'}
+              </div>
+              <div style={{
+                fontSize: '2rem', fontWeight: 900, letterSpacing: '-0.03em', fontVariantNumeric: 'tabular-nums', lineHeight: 1,
+                color: opponentTimeMs !== null ? (!won && !draw ? '#00ff88' : 'rgba(255,255,255,0.5)') : 'rgba(255,255,255,0.3)',
+                textShadow: !won && !draw && opponentTimeMs !== null ? '0 0 24px rgba(0,255,136,0.7)' : 'none',
+              }}>
+                {opponentTimeMs !== null ? fmt(animatedOppTime) : 'KIA'}
+              </div>
+              {!won && !draw && opponentTimeMs !== null && (
+                <div style={{ fontSize: '0.58rem', color: '#00ff88', fontWeight: 700, marginTop: 6, letterSpacing: '0.08em', opacity: 0.7 }}>
+                  ★ FASTEST
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <button
+          onClick={onPlayAgain}
+          style={{
+            padding: '13px 52px', borderRadius: 12, border: 'none',
+            background: hc, color: isWin ? '#000' : '#fff',
+            fontSize: '0.92rem', fontWeight: 800, letterSpacing: '0.06em',
+            cursor: 'pointer', fontFamily: 'inherit',
+            '--bc': hc + 'aa',
+            animation: 'paigon-btn-glow 2.2s 1.1s ease-in-out infinite, paigon-stat 0.4s 0.68s both',
+            transition: 'transform 0.12s',
+          } as React.CSSProperties}
+          onMouseOver={e => { e.currentTarget.style.transform = 'translateY(-2px) scale(1.04)'; }}
+          onMouseOut={e => { e.currentTarget.style.transform = ''; }}
+        >
+          {isWin ? 'Play Again →' : 'Try Again →'}
+        </button>
+      </div>
     </div>
   );
 }
