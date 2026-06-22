@@ -348,12 +348,8 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
                 </div>
                 <div style={{ color: 'rgba(255,255,255,0.15)', fontSize: '0.9rem' }}>→</div>
                 <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '0.56rem', color: 'rgba(255,255,255,0.25)', letterSpacing: '0.12em', textTransform: 'uppercase' as const, marginBottom: 3 }}>Win</div>
-                  <div style={{ fontSize: '0.88rem', fontWeight: 800, color: '#00ff88' }}>{pcLabel(tier.payoutCents)}</div>
-                </div>
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '0.56rem', color: 'rgba(255,255,255,0.25)', letterSpacing: '0.12em', textTransform: 'uppercase' as const, marginBottom: 3 }}>Profit</div>
-                  <div style={{ fontSize: '0.88rem', fontWeight: 800, color: '#fbbf24' }}>+{pcLabel(tier.payoutCents - tier.entryCents)}</div>
+                  <div style={{ fontSize: '0.56rem', color: 'rgba(255,255,255,0.25)', letterSpacing: '0.12em', textTransform: 'uppercase' as const, marginBottom: 3 }}>Current Pool</div>
+                  <div style={{ fontSize: '0.88rem', fontWeight: 800, color: '#00ff88' }}>grows as players join</div>
                 </div>
               </>
             ) : (
@@ -365,7 +361,7 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
 
           {tier.paid && !canAfford && isLoggedIn && trialComplete && (
             <div style={{ marginTop: 6, textAlign: 'center', fontSize: '0.7rem', color: '#ff6b6b', fontWeight: 600 }}>
-              Not enough PC — <a href="/account.html" style={{ color: '#ffa020' }}>add PC</a>
+              Not enough PC — add PC from the main site
             </div>
           )}
           {tier.paid && !trialComplete && onBotTrial && (
