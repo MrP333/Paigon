@@ -13,20 +13,6 @@ import { GameConfig, ResultData } from './types';
 
 const SERVER_URL = 'https://mazergame11-production.up.railway.app';
 
-const DAILY_CHALLENGES = [
-  { label: 'Win any competitive match', target: 1, reward: 10 },
-  { label: 'Win 2 competitive matches', target: 2, reward: 20 },
-  { label: 'Win any competitive match', target: 1, reward: 10 },
-  { label: 'Win 3 competitive matches', target: 3, reward: 30 },
-  { label: 'Win 2 competitive matches', target: 2, reward: 20 },
-];
-
-function getDailyChallenge() {
-  const d = new Date();
-  const start = new Date(d.getFullYear(), 0, 0);
-  const dayOfYear = Math.floor((d.getTime() - start.getTime()) / 86400000);
-  return DAILY_CHALLENGES[dayOfYear % DAILY_CHALLENGES.length];
-}
 
 export default function App() {
   const [screen, setScreen] = useState<'home' | 'waiting' | 'game' | 'trial' | 'result'>('home');
@@ -46,8 +32,7 @@ export default function App() {
   const [points, setPoints]         = useState(0);
   const [winStreak, setWinStreak]   = useState(0);
   const [lossStreak, setLossStreak] = useState(0);
-  const [challengeProgress, setChallengeProgress] = useState(0);
-  const [challengeClaimed, setChallengeClaimed]   = useState(false);
+
 
   const SOLO_DAILY_LIMIT = 5;
 
@@ -69,10 +54,6 @@ export default function App() {
         setPoints(data.points ?? 0);
         setWinStreak(data.winStreak ?? 0);
         setLossStreak(data.lossStreak ?? 0);
-        if (data.dailyChallengeDate === today) {
-          setChallengeProgress(data.dailyChallengeProgress ?? 0);
-          setChallengeClaimed(data.dailyChallengeClaimed ?? false);
-        }
       } else {
         setPlayerName(user.email?.split('@')[0] ?? '');
       }
@@ -227,15 +208,6 @@ export default function App() {
       }).catch(console.error);
 
       if (result.won) {
-        const today = new Date().toISOString().slice(0, 10);
-        const newProgress = challengeProgress + 1;
-        setChallengeProgress(newProgress);
-        setDoc(doc(db, 'users', firebaseUser.uid), {
-          dailyChallengeProgress: newProgress,
-          dailyChallengeDate: today,
-          dailyChallengeClaimed: challengeClaimed,
-        }, { merge: true }).catch(console.error);
-
         addDoc(collection(db, 'recentActivity'), {
           game: 'REFLEX',
           winner: playerName,
@@ -246,24 +218,6 @@ export default function App() {
           createdAt: serverTimestamp(),
         }).catch(console.error);
       }
-    }
-  }
-
-  async function handleClaimChallenge() {
-    if (!firebaseUser || challengeClaimed) return;
-    const today = new Date().toISOString().slice(0, 10);
-    const challenge = getDailyChallenge();
-    const rewardCents = challenge.reward * 10;
-    try {
-      await setDoc(doc(db, 'users', firebaseUser.uid), {
-        balanceCents: balance + rewardCents,
-        dailyChallengeClaimed: true,
-        dailyChallengeDate: today,
-      }, { merge: true });
-      setBalance(b => b + rewardCents);
-      setChallengeClaimed(true);
-    } catch (e) {
-      console.error('Challenge claim failed:', e);
     }
   }
 
@@ -300,10 +254,6 @@ export default function App() {
           points={firebaseUser ? points : undefined}
           winStreak={winStreak}
           lossStreak={lossStreak}
-          challenge={firebaseUser ? getDailyChallenge() : undefined}
-          challengeProgress={challengeProgress}
-          challengeClaimed={challengeClaimed}
-          onClaimChallenge={handleClaimChallenge}
         />
       )}
       {screen === 'waiting' && <WaitingScreen onLeave={handleLeave} />}

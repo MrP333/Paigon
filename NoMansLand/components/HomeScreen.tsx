@@ -12,8 +12,6 @@ function getRank(pts: number): { label: string; color: string } {
   return                   { label: 'RECRUIT',   color: '#94a3b8' };
 }
 
-interface DailyChallengeData { label: string; target: number; reward: number; }
-
 interface Props {
   onQueue: (stakeId: string) => void;
   onSolo: () => void;
@@ -29,10 +27,6 @@ interface Props {
   points?: number;
   winStreak?: number;
   lossStreak?: number;
-  challenge?: DailyChallengeData;
-  challengeProgress?: number;
-  challengeClaimed?: boolean;
-  onClaimChallenge?: () => void;
 }
 
 interface Tier {
@@ -232,7 +226,7 @@ function useBattlefield(canvasRef: React.RefObject<HTMLCanvasElement>) {
   }, []);
 }
 
-export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete, playerName, playerColor, balance, isLoggedIn, onDeposit, soloRunsToday, isDev, points, winStreak = 0, lossStreak = 0, challenge, challengeProgress = 0, challengeClaimed = false, onClaimChallenge }: Props) {
+export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete, playerName, playerColor, balance, isLoggedIn, onDeposit, soloRunsToday, isDev, points, winStreak = 0, lossStreak = 0 }: Props) {
   const [selected, setSelected] = useState('free');
   const canvasRef = useRef<HTMLCanvasElement>(null);
   useBattlefield(canvasRef);
@@ -318,55 +312,6 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
             color: winStreak >= 3 ? '#22c55e' : '#ef4444',
           }}>
             {winStreak >= 3 ? `${winStreak} WIN STREAK` : `${lossStreak} LOSS STREAK`}
-          </div>
-        )}
-
-        {/* Daily challenge */}
-        {isLoggedIn && challenge && (
-          <div style={{
-            width: '100%', marginBottom: 10,
-            padding: '10px 14px', borderRadius: 10,
-            background: challengeProgress >= challenge.target ? 'rgba(0,255,136,0.07)' : 'rgba(255,255,255,0.03)',
-            border: `1px solid ${challengeProgress >= challenge.target ? 'rgba(0,255,136,0.25)' : 'rgba(255,255,255,0.07)'}`,
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: '0.52rem', fontWeight: 800, letterSpacing: '0.22em', color: 'rgba(255,255,255,0.2)', textTransform: 'uppercase' as const, marginBottom: 5 }}>
-                  Daily Challenge
-                </div>
-                <div style={{ fontSize: '0.73rem', fontWeight: 700, color: 'rgba(255,255,255,0.7)', marginBottom: 6 }}>
-                  {challenge.label}
-                </div>
-                {challenge.target > 1 && (
-                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                    {Array.from({ length: challenge.target }).map((_, i) => (
-                      <div key={i} style={{
-                        width: 7, height: 7, borderRadius: '50%',
-                        background: i < challengeProgress ? '#00ff88' : 'rgba(255,255,255,0.12)',
-                        transition: 'background 0.3s',
-                      }} />
-                    ))}
-                    <span style={{ fontSize: '0.6rem', color: 'rgba(255,255,255,0.25)', marginLeft: 4 }}>
-                      {challengeProgress}/{challenge.target}
-                    </span>
-                  </div>
-                )}
-              </div>
-              <div style={{ flexShrink: 0, paddingTop: 2 }}>
-                {challengeClaimed ? (
-                  <div style={{ fontSize: '0.62rem', fontWeight: 800, color: '#00ff88', letterSpacing: '0.08em' }}>CLAIMED ✓</div>
-                ) : challengeProgress >= challenge.target ? (
-                  <button onClick={onClaimChallenge} style={{
-                    padding: '5px 10px', borderRadius: 20,
-                    background: 'rgba(0,255,136,0.15)', border: '1px solid rgba(0,255,136,0.4)',
-                    fontSize: '0.66rem', fontWeight: 800, color: '#00ff88',
-                    cursor: 'pointer', fontFamily: 'inherit', letterSpacing: '0.04em',
-                  }}>+{challenge.reward} PC</button>
-                ) : (
-                  <div style={{ fontSize: '0.66rem', fontWeight: 700, color: 'rgba(255,255,255,0.18)' }}>+{challenge.reward} PC</div>
-                )}
-              </div>
-            </div>
           </div>
         )}
 

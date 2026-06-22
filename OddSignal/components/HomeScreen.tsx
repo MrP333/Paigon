@@ -73,11 +73,6 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
 
       {isLoggedIn && (
         <div style={{ position: 'absolute', top: 18, right: 20, display: 'flex', alignItems: 'center', gap: 10 }}>
-          {points !== undefined && (() => { const r = getRank(points); return (
-            <div style={{ fontSize: '0.62rem', fontWeight: 800, color: r.color, letterSpacing: '0.1em', opacity: 0.9 }}>
-              {r.label} · {points.toLocaleString()} pts
-            </div>
-          ); })()}
           <a href="/account.html" style={{
             display: 'inline-flex', alignItems: 'center',
             background: 'rgba(0,255,136,0.08)', border: '1px solid rgba(0,255,136,0.22)',
@@ -87,6 +82,17 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
           }}>
             {Math.floor(balance / 10)} PC
           </a>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+            <div style={{ width: 26, height: 26, borderRadius: '50%', background: color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 800, color: '#000', flexShrink: 0 }}>
+              {(savedName ?? '')[0]?.toUpperCase() || '?'}
+            </div>
+            <div>
+              <div style={{ color: 'rgba(255,255,255,0.55)', fontSize: '0.75rem', fontWeight: 700, lineHeight: 1.2 }}>{savedName || 'Player'}</div>
+              {points !== undefined && (() => { const r = getRank(points); return (
+                <div style={{ fontSize: '0.58rem', fontWeight: 800, color: r.color, letterSpacing: '0.1em' }}>{r.label} · {points.toLocaleString()} pts</div>
+              ); })()}
+            </div>
+          </div>
         </div>
       )}
 

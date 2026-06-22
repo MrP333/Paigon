@@ -2,12 +2,12 @@ import { useRef, useEffect, useCallback, useState, useMemo } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { Socket } from 'socket.io-client';
-import { GameConfig, ResultData, InputCommands, WorldState, Obstacle } from '../types';
+import { GameConfig, GamePhase, ResultData, InputCommands, WorldState, Obstacle } from '../types';
 import { Simulation } from '../engine/Simulation';
 import { NmlSounds } from '../services/sounds';
 import MuteButton from './MuteButton';
 import {
-  FIELD_W, FIELD_D, BUNKER_H, TOWER_Y, TOWER_Z, TOWER_COUNT,
+  FIELD_W, FIELD_D, BUNKER_H, TOWER_Y, TOWER_Z,
   FINISH_Z, START_Z, WIRE_BAND_ZS, ARTILLERY_BLAST_RADIUS,
 } from '../constants';
 
@@ -15,6 +15,7 @@ interface Props {
   config: GameConfig;
   socket: Socket;
   onResult: (r: ResultData) => void;
+  onPhaseChange?: (phase: GamePhase) => void;
 }
 
 // ── Blood spot pool ───────────────────────────────────────────────────────────
@@ -24,17 +25,25 @@ interface BloodSpot { mesh: THREE.Mesh; life: number; maxLife: number; active: b
 
 // ── 3D Scene ──────────────────────────────────────────────────────────────────
 
+interface OpponentPos { x: number; z: number; crawling: boolean; }
+
 interface SceneProps {
   sim: Simulation;
   inputRef: React.MutableRefObject<InputCommands>;
   onStateUpdate: (s: WorldState) => void;
+  opponentPosRef: React.MutableRefObject<OpponentPos | null>;
+  opponentColor: number;
+  playerColor: number;
+  onGhostScreenPos: (x: number, y: number, inFront: boolean) => void;
 }
 
-function Scene({ sim, inputRef, onStateUpdate }: SceneProps) {
-  const { camera } = useThree();
+function Scene({ sim, inputRef, onStateUpdate, opponentPosRef, opponentColor, playerColor, onGhostScreenPos }: SceneProps) {
+  const { camera, gl } = useThree();
+  const labelVec = useMemo(() => new THREE.Vector3(), []);
 
   // Player parts
   const playerGroupRef = useRef<THREE.Group>(null);
+  const ghostGroupRef  = useRef<THREE.Group>(null);
   const bodyRef        = useRef<THREE.Mesh>(null);
   const headRef        = useRef<THREE.Mesh>(null);
   const leftArmRef     = useRef<THREE.Mesh>(null);
@@ -133,6 +142,30 @@ function Scene({ sim, inputRef, onStateUpdate }: SceneProps) {
     if (rightArmRef.current) rightArmRef.current.rotation.x = moving ? Math.sin(wp) * 0.45 : 0;
     if (bodyRef.current)  bodyRef.current.position.y  = 0.85 + bodyBob;
     if (headRef.current)  headRef.current.position.y  = 1.30 + bodyBob;
+
+    // ── Opponent ghost ────────────────────────────────────────────────────────
+    const ghost = ghostGroupRef.current;
+    if (ghost) {
+      const op = opponentPosRef.current;
+      if (op) {
+        ghost.visible = true;
+        ghost.position.set(op.x, 0, op.z);
+        const ghostTilt = op.crawling ? -Math.PI * 0.43 : 0;
+        ghost.rotation.x += (ghostTilt - ghost.rotation.x) * 0.16;
+        // Project label position (2.2 units above head)
+        labelVec.set(op.x, 2.2, op.z);
+        labelVec.project(camera);
+        const rect = gl.domElement.getBoundingClientRect();
+        onGhostScreenPos(
+          (labelVec.x * 0.5 + 0.5) * rect.width,
+          (-labelVec.y * 0.5 + 0.5) * rect.height,
+          labelVec.z < 1,
+        );
+      } else {
+        ghost.visible = false;
+        onGhostScreenPos(0, 0, false);
+      }
+    }
 
     // ── Sounds ───────────────────────────────────────────────────────────────
     const activeBullets = state.bullets.filter(b => b.active).length;
@@ -311,16 +344,13 @@ function Scene({ sim, inputRef, onStateUpdate }: SceneProps) {
     }
   });
 
-  const towerXs = useMemo(() => {
-    const sp = FIELD_W / (TOWER_COUNT + 1);
-    return Array.from({ length: TOWER_COUNT }, (_, i) => -FIELD_W / 2 + sp * (i + 1));
-  }, []);
+  const towerXs = useMemo(() => sim.getTowers().map(t => t.x), []);
 
   return (
     <>
       <ambientLight intensity={0.35} color={0xb0c4de} />
       <directionalLight position={[20, 40, 60]} intensity={0.85} color={0xfff5e0} castShadow />
-      <fog attach="fog" args={[0x8fa0b0, 55, 140]} />
+      <fog attach="fog" args={[0x8fa0b0, 80, 210]} />
 
       {/* Sky dome */}
       <mesh>
@@ -346,7 +376,7 @@ function Scene({ sim, inputRef, onStateUpdate }: SceneProps) {
         <meshLambertMaterial color={0x7a7a70} />
       </mesh>
       {/* Battlements */}
-      {Array.from({ length: 14 }, (_, i) => (
+      {Array.from({ length: 20 }, (_, i) => (
         <mesh key={i} position={[-FIELD_W / 2 + 2.5 + i * 4.5, BUNKER_H + 0.8, -2]}>
           <boxGeometry args={[2.4, 1.6, 1.2]} />
           <meshLambertMaterial color={0x6a6a60} />
@@ -420,7 +450,7 @@ function Scene({ sim, inputRef, onStateUpdate }: SceneProps) {
       <group ref={playerGroupRef}>
         <mesh ref={bodyRef} position={[0, 0.85, 0]} castShadow>
           <boxGeometry args={[0.5, 0.55, 0.28]} />
-          <meshLambertMaterial color={0x3a6a3a} />
+          <meshLambertMaterial color={playerColor} />
         </mesh>
         <mesh ref={headRef} position={[0, 1.3, 0]}>
           <boxGeometry args={[0.3, 0.3, 0.3]} />
@@ -429,23 +459,23 @@ function Scene({ sim, inputRef, onStateUpdate }: SceneProps) {
         {/* Helmet */}
         <mesh position={[0, 1.46, 0]}>
           <boxGeometry args={[0.34, 0.15, 0.36]} />
-          <meshLambertMaterial color={0x2d4a1e} />
+          <meshLambertMaterial color={0x1a1a1a} />
         </mesh>
         <mesh ref={leftArmRef} position={[-0.33, 0.84, 0]}>
           <boxGeometry args={[0.14, 0.46, 0.14]} />
-          <meshLambertMaterial color={0x3a6a3a} />
+          <meshLambertMaterial color={playerColor} />
         </mesh>
         <mesh ref={rightArmRef} position={[0.33, 0.84, 0]}>
           <boxGeometry args={[0.14, 0.46, 0.14]} />
-          <meshLambertMaterial color={0x3a6a3a} />
+          <meshLambertMaterial color={playerColor} />
         </mesh>
         <mesh ref={leftLegRef} position={[-0.14, 0.33, 0]}>
           <boxGeometry args={[0.18, 0.6, 0.18]} />
-          <meshLambertMaterial color={0x2d4a1e} />
+          <meshLambertMaterial color={0x1a1a1a} />
         </mesh>
         <mesh ref={rightLegRef} position={[0.14, 0.33, 0]}>
           <boxGeometry args={[0.18, 0.6, 0.18]} />
-          <meshLambertMaterial color={0x2d4a1e} />
+          <meshLambertMaterial color={0x1a1a1a} />
         </mesh>
         {/* Rifle */}
         <mesh position={[0.32, 0.82, -0.3]} rotation={[0.6, 0, 0.05]}>
@@ -454,6 +484,38 @@ function Scene({ sim, inputRef, onStateUpdate }: SceneProps) {
         </mesh>
         {/* Blood spots — local space, stay on body */}
         <group ref={bloodGroupRef} />
+      </group>
+
+      {/* Opponent ghost — semi-transparent, colored by opponentColor */}
+      <group ref={ghostGroupRef} visible={false}>
+        <mesh position={[0, 0.85, 0]}>
+          <boxGeometry args={[0.5, 0.55, 0.28]} />
+          <meshLambertMaterial color={opponentColor} transparent opacity={0.55} />
+        </mesh>
+        <mesh position={[0, 1.3, 0]}>
+          <boxGeometry args={[0.3, 0.3, 0.3]} />
+          <meshLambertMaterial color={opponentColor} transparent opacity={0.55} />
+        </mesh>
+        <mesh position={[0, 1.46, 0]}>
+          <boxGeometry args={[0.34, 0.15, 0.36]} />
+          <meshLambertMaterial color={opponentColor} transparent opacity={0.45} />
+        </mesh>
+        <mesh position={[-0.33, 0.84, 0]}>
+          <boxGeometry args={[0.14, 0.46, 0.14]} />
+          <meshLambertMaterial color={opponentColor} transparent opacity={0.55} />
+        </mesh>
+        <mesh position={[0.33, 0.84, 0]}>
+          <boxGeometry args={[0.14, 0.46, 0.14]} />
+          <meshLambertMaterial color={opponentColor} transparent opacity={0.55} />
+        </mesh>
+        <mesh position={[-0.14, 0.33, 0]}>
+          <boxGeometry args={[0.18, 0.6, 0.18]} />
+          <meshLambertMaterial color={opponentColor} transparent opacity={0.55} />
+        </mesh>
+        <mesh position={[0.14, 0.33, 0]}>
+          <boxGeometry args={[0.18, 0.6, 0.18]} />
+          <meshLambertMaterial color={opponentColor} transparent opacity={0.55} />
+        </mesh>
       </group>
 
       {/* Bullets */}
@@ -586,7 +648,7 @@ function WireBand({ z, gapX, gapW }: { z: number; gapX: number; gapW: number }) 
 
 // ── HUD ───────────────────────────────────────────────────────────────────────
 
-function HUD({ state }: { state: WorldState }) {
+function HUD({ state, playerColor = '#ffa020' }: { state: WorldState; playerColor?: string }) {
   const { player, distancePct, artilleryStatus, timer } = state;
   const hp    = Math.max(0, player.health);
   const hpCol = hp > 60 ? '#22c55e' : hp > 30 ? '#eab308' : '#ef4444';
@@ -627,7 +689,7 @@ function HUD({ state }: { state: WorldState }) {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <Bar label={`ADVANCE — ${Math.round(distancePct * 100)}%`} pct={distancePct} color="#22c55e" h={6} />
+        <Bar label={`ADVANCE — ${Math.round(distancePct * 100)}%`} pct={distancePct} color={playerColor} h={6} />
         <Bar label={`HP — ${Math.round(hp)} / ${player.maxHealth}`} pct={hp / player.maxHealth} color={hpCol} h={10} />
       </div>
     </div>
@@ -663,25 +725,64 @@ function Bar({ label, pct, color, h }: { label: string; pct: number; color: stri
 
 // ── End overlays ──────────────────────────────────────────────────────────────
 
-function EndCard({ bg, accent, title, sub, detail, btnLabel, onBtn }: {
+function EndCard({ bg, accent, title, sub, detail, btnLabel, onBtn, type = 'neutral' }: {
   bg: string; accent: string; title: string; sub: string; detail: string;
-  btnLabel: string; onBtn: () => void;
+  btnLabel: string; onBtn: () => void; type?: 'victory' | 'dead' | 'neutral';
 }) {
+  const isVictory = type === 'victory';
   return (
     <div style={{
       position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
       alignItems: 'center', justifyContent: 'center',
-      background: bg, fontFamily: 'ui-monospace, monospace',
+      background: bg, fontFamily: 'ui-monospace, monospace', overflow: 'hidden',
     }}>
-      <div style={{ fontSize: '3.5rem', fontWeight: 900, color: accent, lineHeight: 1 }}>{title}</div>
-      <div style={{ fontSize: '1rem', color: 'rgba(255,255,255,0.4)', letterSpacing: '0.3em', marginTop: 6 }}>{sub}</div>
-      {detail && <div style={{ fontSize: '2.2rem', fontWeight: 800, color: '#fff', marginTop: 22 }}>{detail}</div>}
+      {/* Radial glow */}
+      <div style={{
+        position: 'absolute', inset: '-20%',
+        background: `radial-gradient(ellipse 50% 40% at 50% 50%, ${accent}28 0%, transparent 70%)`,
+        animation: 'endGlow 2.8s ease-in-out infinite',
+        pointerEvents: 'none',
+      }} />
+
+      {/* Vertical light beams on victory */}
+      {isVictory && <>
+        <div style={{ position: 'absolute', top: 0, left: '50%', transform: 'translateX(-50%)', width: 1, height: '38%', background: `linear-gradient(to bottom, transparent, ${accent}55)`, pointerEvents: 'none' }} />
+        <div style={{ position: 'absolute', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: 1, height: '38%', background: `linear-gradient(to top, transparent, ${accent}55)`, pointerEvents: 'none' }} />
+      </>}
+
+      {/* Title */}
+      <div style={{
+        fontSize: 'clamp(3.8rem, 12vw, 6.5rem)', fontWeight: 900, color: accent, lineHeight: 1,
+        textShadow: `0 0 30px ${accent}bb, 0 0 80px ${accent}44`,
+        animation: isVictory ? 'endTitle 2s ease-in-out infinite' : 'none',
+        letterSpacing: '0.1em', position: 'relative', zIndex: 1,
+      }}>{title}</div>
+
+      <div style={{
+        fontSize: '0.78rem', color: 'rgba(255,255,255,0.38)', letterSpacing: '0.32em',
+        marginTop: 12, textTransform: 'uppercase', position: 'relative', zIndex: 1,
+      }}>{sub}</div>
+
+      {detail && (
+        <div style={{ marginTop: 28, textAlign: 'center', position: 'relative', zIndex: 1 }}>
+          <div style={{ fontSize: '0.52rem', fontWeight: 700, letterSpacing: '0.3em', color: 'rgba(255,255,255,0.2)', marginBottom: 8, textTransform: 'uppercase' }}>
+            YOUR TIME
+          </div>
+          <div style={{
+            fontSize: 'clamp(2rem, 7vw, 3.2rem)', fontWeight: 800, color: '#fff', letterSpacing: '0.06em',
+            textShadow: isVictory ? `0 0 24px ${accent}55` : 'none',
+          }}>{detail}</div>
+        </div>
+      )}
+
       {btnLabel && (
         <button onClick={onBtn} style={{
-          marginTop: 28, padding: '12px 32px', borderRadius: 10,
-          border: `1px solid ${accent}`, background: `${accent}22`,
-          color: accent, fontFamily: 'inherit', fontSize: '0.9rem',
-          fontWeight: 700, letterSpacing: '0.12em', cursor: 'pointer',
+          marginTop: 36, padding: '14px 44px', borderRadius: 12,
+          border: `1px solid ${accent}88`, background: isVictory ? `${accent}20` : 'rgba(255,255,255,0.05)',
+          color: accent, fontFamily: 'inherit', fontSize: '0.88rem',
+          fontWeight: 700, letterSpacing: '0.15em', cursor: 'pointer',
+          boxShadow: isVictory ? `0 0 28px ${accent}33` : 'none',
+          transition: 'all 0.15s', position: 'relative', zIndex: 1,
         }}>{btnLabel}</button>
       )}
     </div>
@@ -690,15 +791,50 @@ function EndCard({ bg, accent, title, sub, detail, btnLabel, onBtn }: {
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
-export default function GameScreen({ config, socket, onResult }: Props) {
+
+export default function GameScreen({ config, socket, onResult, onPhaseChange }: Props) {
   const simRef   = useRef<Simulation | null>(null);
   const inputRef = useRef<InputCommands>({ dx: 0, dz: 0, crawl: false, sprint: false });
   const [worldState, setWorldState] = useState<WorldState | null>(null);
   const phaseRef = useRef('playing');
   const emittedRef = useRef(false);
 
+  const opponentPosRef = useRef<{ x: number; z: number; crawling: boolean } | null>(null);
+  const lastPosEmitRef = useRef(0);
+  const ghostLabelRef  = useRef<HTMLDivElement>(null);
+
+  const opponentColorHex = useMemo(() => {
+    try { return parseInt((config.opponentColor ?? '#fb923c').replace('#', ''), 16); }
+    catch { return 0xfb923c; }
+  }, [config.opponentColor]);
+
+  const playerColorHex = useMemo(() => {
+    try { return parseInt((config.playerColor ?? '#ffa020').replace('#', ''), 16); }
+    catch { return 0xffa020; }
+  }, [config.playerColor]);
+
+  const isTouch = useMemo(() => typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0), []);
+  const touchDirsRef = useRef(new Set<string>());
+
+  const syncTouchInput = useCallback(() => {
+    const d = touchDirsRef.current;
+    inputRef.current = {
+      dx: (d.has('right') ? 1 : 0) - (d.has('left') ? 1 : 0),
+      dz: (d.has('down')  ? 1 : 0) - (d.has('up')   ? 1 : 0),
+      crawl:  d.has('crawl'),
+      sprint: d.has('sprint'),
+    };
+  }, [inputRef]);
+
+  const handleGhostScreenPos = useCallback((x: number, y: number, inFront: boolean) => {
+    const el = ghostLabelRef.current;
+    if (!el) return;
+    el.style.opacity = inFront ? '1' : '0';
+    el.style.transform = `translate(-50%, -100%) translate(${x}px, ${y}px)`;
+  }, []);
+
   useEffect(() => {
-    simRef.current = new Simulation(config.roomCode);
+    simRef.current = new Simulation(config.roomCode, config.towerCount ?? 5);
     setWorldState(simRef.current.getState());
   }, [config.roomCode]);
 
@@ -722,9 +858,24 @@ export default function GameScreen({ config, socket, onResult }: Props) {
   }, []);
 
   const handleStateUpdate = useCallback((state: WorldState) => {
-    if (state.phase !== phaseRef.current) phaseRef.current = state.phase;
+    if (state.phase !== phaseRef.current) {
+      phaseRef.current = state.phase;
+      onPhaseChange?.(state.phase);
+    }
+    if (!config.solo && socket && state.phase === 'playing') {
+      const now = performance.now();
+      if (now - lastPosEmitRef.current > 50) {
+        lastPosEmitRef.current = now;
+        socket.emit('nml:pos', {
+          roomCode: config.roomCode,
+          x: state.player.pos.x,
+          z: state.player.pos.z,
+          crawling: state.player.isCrawling,
+        });
+      }
+    }
     setWorldState({ ...state });
-  }, []);
+  }, [onPhaseChange, config.solo, config.roomCode, socket]);
 
   const phase = worldState?.phase ?? 'playing';
 
@@ -745,6 +896,16 @@ export default function GameScreen({ config, socket, onResult }: Props) {
       }
     }
   }, [phase, config.solo, config.roomCode, socket]);
+
+  // Listen for opponent position updates
+  useEffect(() => {
+    if (config.solo) return;
+    const handler = (data: { x: number; z: number; crawling: boolean }) => {
+      opponentPosRef.current = data;
+    };
+    socket.on('nml:pos', handler);
+    return () => { socket.off('nml:pos', handler); };
+  }, [config.solo, socket]);
 
   // Listen for server result in multiplayer
   useEffect(() => {
@@ -767,12 +928,13 @@ export default function GameScreen({ config, socket, onResult }: Props) {
   const handleDone = useCallback(() => {
     if (!config.solo) return; // multiplayer result comes from socket
     const state = simRef.current?.getState();
+    const myTimeMs = state ? state.timer * 1000 : null;
     onResult({
       won: phaseRef.current === 'victory',
       draw: false,
-      myTimeMs:       state ? state.timer * 1000 : null,
+      myTimeMs,
       opponentTimeMs: null,
-      winnerName:     phaseRef.current === 'victory' ? config.playerName : 'Enemy',
+      winnerName: phaseRef.current === 'victory' ? config.playerName : 'Enemy',
     });
   }, [onResult, config.playerName, config.solo]);
 
@@ -781,14 +943,83 @@ export default function GameScreen({ config, socket, onResult }: Props) {
   return (
     <div style={{ position: 'relative', width: '100vw', height: '100vh', overflow: 'hidden', background: '#03030a' }}>
       <Canvas
-        camera={{ fov: 62, near: 0.1, far: 220, position: [0, 4.8, START_Z + 11] }}
+        camera={{ fov: 62, near: 0.1, far: 280, position: [0, 4.8, START_Z + 11] }}
         gl={{ antialias: true }}
         style={{ position: 'absolute', inset: 0 }}
       >
-        <Scene sim={simRef.current} inputRef={inputRef} onStateUpdate={handleStateUpdate} />
+        <Scene sim={simRef.current} inputRef={inputRef} onStateUpdate={handleStateUpdate} opponentPosRef={opponentPosRef} opponentColor={opponentColorHex} playerColor={playerColorHex} onGhostScreenPos={handleGhostScreenPos} />
       </Canvas>
 
-      {worldState && phase === 'playing' && <HUD state={worldState} />}
+      {worldState && phase === 'playing' && <HUD state={worldState} playerColor={config.playerColor ?? '#ffa020'} />}
+
+      {/* Opponent name label — floats above ghost, only in multiplayer */}
+      {!config.solo && (
+        <div ref={ghostLabelRef} style={{
+          position: 'absolute', top: 0, left: 0, opacity: 0,
+          pointerEvents: 'none', zIndex: 20,
+          background: `${config.opponentColor}22`,
+          border: `1px solid ${config.opponentColor}88`,
+          borderRadius: 6, padding: '3px 10px',
+          color: config.opponentColor,
+          fontSize: '0.68rem', fontWeight: 800, letterSpacing: '0.1em',
+          fontFamily: 'ui-monospace, monospace', textTransform: 'uppercase',
+          whiteSpace: 'nowrap', transition: 'opacity 0.15s',
+        }}>
+          {config.opponentName}
+        </div>
+      )}
+
+      {/* Touch controls — D-pad + sprint/crawl, only on touch devices */}
+      {isTouch && phase === 'playing' && (
+        <div style={{ position: 'absolute', bottom: 24, left: 0, right: 0, display: 'flex', justifyContent: 'space-between', padding: '0 24px', zIndex: 50, pointerEvents: 'none' }}>
+          {/* D-pad */}
+          <div style={{ position: 'relative', width: 140, height: 140, pointerEvents: 'auto' }}>
+            {([
+              { dir: 'up',    label: '▲', top: 0,   left: 44 },
+              { dir: 'left',  label: '◀', top: 44,  left: 0  },
+              { dir: 'right', label: '▶', top: 44,  left: 88 },
+              { dir: 'down',  label: '▼', top: 88,  left: 44 },
+            ] as const).map(({ dir, label, top, left }) => (
+              <button key={dir}
+                onPointerDown={() => { touchDirsRef.current.add(dir); syncTouchInput(); }}
+                onPointerUp={() => { touchDirsRef.current.delete(dir); syncTouchInput(); }}
+                onPointerLeave={() => { touchDirsRef.current.delete(dir); syncTouchInput(); }}
+                style={{
+                  position: 'absolute', top, left,
+                  width: 52, height: 52, borderRadius: 10,
+                  background: 'rgba(255,255,255,0.12)',
+                  border: '1px solid rgba(255,255,255,0.22)',
+                  color: 'rgba(255,255,255,0.8)', fontSize: '1.1rem',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  cursor: 'pointer', touchAction: 'none', userSelect: 'none',
+                }}
+              >{label}</button>
+            ))}
+          </div>
+
+          {/* Action buttons */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, justifyContent: 'flex-end', pointerEvents: 'auto' }}>
+            {([
+              { dir: 'sprint', label: 'SPRINT', color: '#ffa020' },
+              { dir: 'crawl',  label: 'CRAWL',  color: '#60a5fa' },
+            ] as const).map(({ dir, label, color }) => (
+              <button key={dir}
+                onPointerDown={() => { touchDirsRef.current.add(dir); syncTouchInput(); }}
+                onPointerUp={() => { touchDirsRef.current.delete(dir); syncTouchInput(); }}
+                onPointerLeave={() => { touchDirsRef.current.delete(dir); syncTouchInput(); }}
+                style={{
+                  width: 88, height: 52, borderRadius: 10,
+                  background: `${color}22`, border: `1px solid ${color}66`,
+                  color, fontSize: '0.72rem', fontWeight: 800, letterSpacing: '0.1em',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  cursor: 'pointer', touchAction: 'none', userSelect: 'none',
+                  fontFamily: 'ui-monospace, monospace',
+                }}
+              >{label}</button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Mute button — always visible during gameplay */}
       <div style={{ position: 'absolute', top: 14, right: 14, zIndex: 999 }}>
@@ -796,17 +1027,24 @@ export default function GameScreen({ config, socket, onResult }: Props) {
       </div>
 
       {phase === 'victory' && worldState && (
-        <EndCard bg="rgba(0,20,0,0.84)" accent="#22c55e" title="ACROSS"
-          sub={config.solo ? 'NO MAN\'S LAND CROSSED' : 'WAITING FOR OPPONENT…'}
+        <EndCard bg="rgba(0,18,0,0.90)" accent="#22c55e" type="victory"
+          title="ACROSS"
+          sub={config.solo ? "NO MAN'S LAND CROSSED" : 'WAITING FOR OPPONENT…'}
           detail={`${Math.floor(worldState.timer / 60) > 0 ? Math.floor(worldState.timer / 60) + 'm ' : ''}${(worldState.timer % 60).toFixed(2)}s`}
           btnLabel={config.solo ? 'BACK TO LOBBY' : ''} onBtn={handleDone} />
       )}
       {phase === 'dead' && (
-        <EndCard bg="rgba(30,0,0,0.86)" accent="#ef4444" title="KIA"
-          sub={config.solo ? 'KILLED IN ACTION' : 'WAITING FOR RESULT…'} detail="" btnLabel={config.solo ? 'TRY AGAIN' : ''} onBtn={handleDone} />
+        <EndCard bg="rgba(28,0,0,0.92)" accent="#ef4444" type="dead"
+          title="KIA"
+          sub={config.solo ? 'KILLED IN ACTION' : 'WAITING FOR RESULT…'}
+          detail="" btnLabel={config.solo ? 'TRY AGAIN' : ''} onBtn={handleDone} />
       )}
 
-      <style>{`@keyframes artWarn { from{opacity:0.7} to{opacity:1} }`}</style>
+      <style>{`
+        @keyframes artWarn { from{opacity:0.7} to{opacity:1} }
+        @keyframes endGlow { 0%,100%{opacity:0.7;transform:scale(1)} 50%{opacity:1;transform:scale(1.08)} }
+        @keyframes endTitle { 0%,100%{transform:scale(1)} 50%{transform:scale(1.03)} }
+      `}</style>
     </div>
   );
 }

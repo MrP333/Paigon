@@ -8,7 +8,7 @@ import {
   PLAYER_R, PLAYER_SPEED, CRAWL_MULT, SPRINT_MULT, PLAYER_MAX_HEALTH,
   BULLET_DAMAGE, BULLET_SPEED, BULLET_LIFE, BULLET_SPREAD,
   ARTILLERY_DAMAGE, WIRE_DAMAGE_PER_TICK,
-  TOWER_Y, TOWER_Z, TOWER_COUNT,
+  TOWER_Y, TOWER_Z,
   ARTILLERY_BLAST_RADIUS, ARTILLERY_WARN_DURATION, ARTILLERY_BLAST_DURATION,
   WIRE_BAND_ZS, WIRE_GAP_W, FIXED_DT,
 } from '../constants';
@@ -69,7 +69,7 @@ export class Simulation {
   private blastDealt = new Set<number>();
   private rng: () => number;
 
-  constructor(roomCode: string) {
+  constructor(roomCode: string, towerCount = 5) {
     this.rng = rngFromKey(roomCode + ':tick');
     const player: PlayerState = {
       pos: { x: 0, y: 0, z: START_Z },
@@ -91,7 +91,7 @@ export class Simulation {
       effects: [],
       distancePct: 0,
     };
-    this.buildTowers(roomCode);
+    this.buildTowers(roomCode, towerCount);
     this.buildObstacles(roomCode);
     this.buildCraters(roomCode);
     this.buildArtillerySchedule(roomCode);
@@ -103,12 +103,12 @@ export class Simulation {
     }
   }
 
-  private buildTowers(roomCode: string) {
+  private buildTowers(roomCode: string, towerCount: number) {
     const rng = rngFromKey(roomCode + ':towers');
-    const spacing = FIELD_W / (TOWER_COUNT + 1);
-    for (let i = 0; i < TOWER_COUNT; i++) {
+    const spacing = FIELD_W / (towerCount + 1);
+    for (let i = 0; i < towerCount; i++) {
       const x = -FIELD_W / 2 + spacing * (i + 1);
-      const sweep = 20 + rng() * 18;
+      const sweep = 22 + rng() * 16;
       this.towers.push({
         x, y: TOWER_Y, z: TOWER_Z,
         aimX: x,
@@ -136,10 +136,10 @@ export class Simulation {
       });
     }
 
-    // 5 tank wrecks — thick enough to actually block elevated fire
-    for (let i = 0; i < 5; i++) {
+    // 7 tank wrecks — thick enough to actually block elevated fire
+    for (let i = 0; i < 7; i++) {
       const x = -FIELD_W / 2 + 6 + rng() * (FIELD_W - 12);
-      const z = 8 + rng() * 72;
+      const z = 12 + rng() * 104;
       obs.push({
         kind: 'tankWreck',
         pos: { x, y: 0, z },
@@ -148,10 +148,10 @@ export class Simulation {
       });
     }
 
-    // 5 sandbag walls
-    for (let i = 0; i < 5; i++) {
+    // 7 sandbag walls
+    for (let i = 0; i < 7; i++) {
       const x = -FIELD_W / 2 + 4 + rng() * (FIELD_W - 8);
-      const z = 6 + rng() * 74;
+      const z = 9 + rng() * 107;
       obs.push({
         kind: 'sandbag',
         pos: { x, y: 0, z },
@@ -163,10 +163,10 @@ export class Simulation {
 
   private buildCraters(roomCode: string) {
     const rng = rngFromKey(roomCode + ':craters');
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < 4; i++) {
       this.state.craters.push({
         x: -FIELD_W / 2 + 6 + rng() * (FIELD_W - 12),
-        z: 20 + rng() * 50,
+        z: 29 + rng() * 72,
         r: 2.0 + rng() * 1.5,
       });
     }
@@ -178,7 +178,7 @@ export class Simulation {
     for (let i = 0; i < 30; i++) {
       this.state.artillerySchedule.push({
         x: -FIELD_W / 2 + 4 + rng() * (FIELD_W - 8),
-        z: 8 + rng() * 72,
+        z: 12 + rng() * 104,
         detonateAt: t + ARTILLERY_WARN_DURATION,
         warnDuration: ARTILLERY_WARN_DURATION,
       });
@@ -274,14 +274,14 @@ export class Simulation {
       if (tower.fireTimer <= 0) {
         tower.fireTimer = tower.fireInterval;
 
-        // 70% of shots are poorly aimed (wild miss), 30% are on-target
-        const badShot = rng() < 0.70;
+        // 50% of shots are poorly aimed, 50% are on-target (more accurate than before)
+        const badShot = rng() < 0.50;
         this.fireBullet(
           { x: tower.x, y: tower.y, z: tower.z },
           {
-            x: tower.aimX + (rng() - 0.5) * (badShot ? 22 : 2.0),
+            x: tower.aimX + (rng() - 0.5) * (badShot ? 14 : 1.8),
             y: p.pos.y + (p.isCrawling ? 0.15 : 0.85),
-            z: p.pos.z  + (rng() - 0.5) * (badShot ? 16 : 1.5),
+            z: p.pos.z  + (rng() - 0.5) * (badShot ? 10 : 1.2),
           },
         );
       }

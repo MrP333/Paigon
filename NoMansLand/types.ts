@@ -105,6 +105,7 @@ export interface GameConfig {
   stakeId: string;
   payoutCents: number;
   solo?: boolean;
+  towerCount?: number;
 }
 
 export interface ResultData {
