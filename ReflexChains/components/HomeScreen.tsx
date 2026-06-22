@@ -63,22 +63,16 @@ function getRank(pts: number): { label: string; color: string } {
 }
 
 const TIERS = [
-  { id: 'free',     label: 'Free',     entryCents: 0,    payoutCents: 0,    desc: 'No entry fee' },
-  { id: 'quick',    label: '5 PC',    entryCents: 50,   payoutCents: 98,   desc: 'win 9.8 PC' },
-  { id: 'standard', label: '20 PC',   entryCents: 200,  payoutCents: 392,  desc: 'win 39.2 PC' },
-  { id: 'high',     label: '100 PC',  entryCents: 1000, payoutCents: 1960, desc: 'win 196 PC' },
-  { id: 'elite',    label: '500 PC',  entryCents: 5000, payoutCents: 9800, desc: 'win 980 PC' },
+  { id: 'free',     label: 'Free',    entryCents: 0,    payoutCents: 0,    desc: 'No entry fee' },
+  { id: 'quick',    label: '5 PC',    entryCents: 50,   payoutCents: 98,   desc: 'lobby · 2% rake' },
+  { id: 'standard', label: '20 PC',   entryCents: 200,  payoutCents: 392,  desc: 'lobby · 2% rake' },
+  { id: 'high',     label: '100 PC',  entryCents: 1000, payoutCents: 1960, desc: 'lobby · 2% rake' },
+  { id: 'elite',    label: '500 PC',  entryCents: 5000, payoutCents: 9800, desc: 'lobby · 2% rake' },
 ];
 
 function pc(cents: number) { return (cents / 10).toFixed(0) + ' PC'; }
 
 const SOLO_DAILY_LIMIT = 5;
-
-interface DailyChallengeData {
-  label: string;
-  target: number;
-  reward: number;
-}
 
 interface Props {
   onQueue: (stakeId: string, name: string, color: string) => void;
@@ -94,13 +88,9 @@ interface Props {
   points?: number;
   winStreak?: number;
   lossStreak?: number;
-  challenge?: DailyChallengeData;
-  challengeProgress?: number;
-  challengeClaimed?: boolean;
-  onClaimChallenge?: () => void;
 }
 
-export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete, playerName: savedName, playerColor: savedColor, balance = 0, isLoggedIn, soloRunsToday, isDev, points, winStreak = 0, lossStreak = 0, challenge, challengeProgress = 0, challengeClaimed = false, onClaimChallenge }: Props) {
+export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete, playerName: savedName, playerColor: savedColor, balance = 0, isLoggedIn, soloRunsToday, isDev, points, winStreak = 0, lossStreak = 0 }: Props) {
   const color = savedColor ?? '#22d3ee';
   const [selectedTier, setSelectedTier] = useState('free');
   const runsLeft = SOLO_DAILY_LIMIT - (soloRunsToday ?? 0);
@@ -195,23 +185,29 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
         </div>
       ))}
 
-      {/* Top bar — rank + wallet */}
+      {/* Top bar — account */}
       {isLoggedIn && (
         <div style={{ position: 'absolute', top: 18, right: 20, display: 'flex', alignItems: 'center', gap: 10, zIndex: 2 }}>
-          {points !== undefined && (() => { const r = getRank(points); return (
-            <div style={{ fontSize: '0.62rem', fontWeight: 800, color: r.color, letterSpacing: '0.1em', opacity: 0.9 }}>
-              {r.label} · {points.toLocaleString()} pts
-            </div>
-          ); })()}
-          <a href="/account.html" style={{
+          <div style={{
             display: 'inline-flex', alignItems: 'center',
             background: 'rgba(0,255,136,0.08)', border: '1px solid rgba(0,255,136,0.22)',
             borderRadius: 999, padding: '4px 12px',
             color: '#00ff88', fontSize: '0.7rem', fontWeight: 800,
-            letterSpacing: '0.04em', textDecoration: 'none', fontFamily: 'inherit',
+            letterSpacing: '0.04em', fontFamily: 'inherit',
           }}>
             {Math.floor(balance / 10)} PC
-          </a>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+            <div style={{ width: 26, height: 26, borderRadius: '50%', background: color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 800, color: '#000', flexShrink: 0 }}>
+              {(savedName ?? '')[0]?.toUpperCase() || '?'}
+            </div>
+            <div>
+              <div style={{ color: 'rgba(255,255,255,0.55)', fontSize: '0.75rem', fontWeight: 700, lineHeight: 1.2 }}>{savedName || 'Player'}</div>
+              {points !== undefined && (() => { const r = getRank(points); return (
+                <div style={{ fontSize: '0.58rem', fontWeight: 800, color: r.color, letterSpacing: '0.1em' }}>{r.label} · {points.toLocaleString()} pts</div>
+              ); })()}
+            </div>
+          </div>
         </div>
       )}
 
@@ -291,56 +287,6 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
           </div>
         )}
 
-        {/* Daily challenge card */}
-        {isLoggedIn && challenge && (
-          <div style={{
-            padding: '10px 14px', borderRadius: 10,
-            background: challengeProgress >= challenge.target
-              ? 'rgba(0,255,136,0.07)' : 'rgba(255,255,255,0.03)',
-            border: `1px solid ${challengeProgress >= challenge.target
-              ? 'rgba(0,255,136,0.25)' : 'rgba(255,255,255,0.07)'}`,
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: '0.52rem', fontWeight: 800, letterSpacing: '0.22em', color: 'rgba(255,255,255,0.2)', textTransform: 'uppercase' as const, marginBottom: 5 }}>
-                  Daily Challenge
-                </div>
-                <div style={{ fontSize: '0.73rem', fontWeight: 700, color: 'rgba(255,255,255,0.7)', marginBottom: 6 }}>
-                  {challenge.label}
-                </div>
-                {challenge.target > 1 && (
-                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                    {Array.from({ length: challenge.target }).map((_, i) => (
-                      <div key={i} style={{
-                        width: 7, height: 7, borderRadius: '50%',
-                        background: i < challengeProgress ? '#00ff88' : 'rgba(255,255,255,0.12)',
-                        transition: 'background 0.3s',
-                      }} />
-                    ))}
-                    <span style={{ fontSize: '0.6rem', color: 'rgba(255,255,255,0.25)', marginLeft: 4 }}>
-                      {challengeProgress}/{challenge.target}
-                    </span>
-                  </div>
-                )}
-              </div>
-              <div style={{ flexShrink: 0, paddingTop: 2 }}>
-                {challengeClaimed ? (
-                  <div style={{ fontSize: '0.62rem', fontWeight: 800, color: '#00ff88', letterSpacing: '0.08em' }}>CLAIMED ✓</div>
-                ) : challengeProgress >= challenge.target ? (
-                  <button onClick={onClaimChallenge} style={{
-                    padding: '5px 10px', borderRadius: 20,
-                    background: 'rgba(0,255,136,0.15)', border: '1px solid rgba(0,255,136,0.4)',
-                    fontSize: '0.66rem', fontWeight: 800, color: '#00ff88',
-                    cursor: 'pointer', fontFamily: 'inherit', letterSpacing: '0.04em',
-                  }}>+{challenge.reward} PC</button>
-                ) : (
-                  <div style={{ fontSize: '0.66rem', fontWeight: 700, color: 'rgba(255,255,255,0.18)' }}>+{challenge.reward} PC</div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* Stake tier selector */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <label style={{ fontSize: '0.65rem', fontWeight: 700, letterSpacing: '0.12em', color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase' }}>
@@ -402,8 +348,7 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
         {/* Insufficient balance notice */}
         {isPaid && !trialLocked && !authLocked && !canAfford && (
           <div style={{ padding: '10px 14px', borderRadius: 10, background: 'rgba(255,107,107,0.07)', border: '1px solid rgba(255,107,107,0.2)', fontSize: '0.72rem', color: 'rgba(255,107,107,0.8)' }}>
-            Not enough PC for this tier.{' '}
-            <a href="/account.html" style={{ color: '#ff6b6b', fontWeight: 700 }}>Add PC →</a>
+            Not enough PC for this tier. Add PC from the main site.
           </div>
         )}
 
