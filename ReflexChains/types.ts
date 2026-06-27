@@ -2,6 +2,20 @@ export interface Target {
   x: number;
   y: number;
   index: number;
+  ringMs: number;
+  isDecoy: boolean;
+}
+
+export interface Opponent { name: string; color: string; }
+
+export interface PlayerResult {
+  rank: number;
+  name: string;
+  color: string;
+  score: number;
+  hits: number;
+  timeMs: number;
+  won: boolean;
 }
 
 export interface GameConfig {
@@ -10,6 +24,7 @@ export interface GameConfig {
   playerColor: string;
   opponentName: string;
   opponentColor: string;
+  opponents?: Opponent[];
   stakeId: string;
   payoutCents: number;
   solo?: boolean;
@@ -24,6 +39,7 @@ export interface ResultData {
   opponentScore: number | null;
   opponentHits: number | null;
   winnerName: string;
+  players?: PlayerResult[];
 }
 
 export interface HitRecord {
