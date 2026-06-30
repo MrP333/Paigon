@@ -1,15 +1,18 @@
-import { useEffect, useRef, useState, useMemo } from 'react';
+import { useEffect, useRef, useState, useMemo, useCallback, CSSProperties } from 'react';
 import { Socket } from 'socket.io-client';
-import { GameConfig, ResultData, RoundResult } from '../types';
+import { GameConfig, ResultData } from '../types';
 
-const TOTAL_ROUNDS = 5;
-const ROUND_TIMEOUT_MS = 30_000;
-const CORRECT_PAUSE_MS = 600;
-const WRONG_FLASH_MS   = 450;
+const GAME_DURATION_S = 30;
+const ARM_DELAY_MS    = 250;
+const LOCKOUT_MS      = [1500, 3000, 5000]; // progressive: 1st/2nd/3rd+ wrong in same set
 
-const CARD_COLORS = ['#ef4444','#f97316','#eab308','#22c55e','#06b6d4','#3b82f6','#8b5cf6','#ec4899','#14b8a6','#f59e0b','#e11d48','#7c3aed'];
+const CARD_COLORS = [
+  '#ef4444','#f97316','#eab308','#22c55e','#06b6d4',
+  '#3b82f6','#8b5cf6','#ec4899','#14b8a6','#7c3aed',
+  '#0891b2','#d97706',
+];
 
-// ── Seeded RNG ─────────────────────────────────────────────────────────────────
+// ── Seeded RNG ──────────────────────────────────────────────────────────────
 function mulberry32(seed: number) {
   return function () {
     seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
@@ -18,134 +21,204 @@ function mulberry32(seed: number) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-
 function hashCode(s: string): number {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
   return h >>> 0;
 }
 
-// ── Round configs ─────────────────────────────────────────────────────────────
-interface RoundDef {
-  cardCount: number;
-  stdSides: number;
-  oddType: 'extra-side' | 'displaced';
-  oddSides?: number;
-  displaceAmount?: number;
+// ── Shape definitions ────────────────────────────────────────────────────────
+interface ShapeDef {
+  sides: number;
+  isStar?: boolean;
+  innerFrac?: number;
+  displaceAmt?: number;
+  flipX?: boolean;
 }
 
-const ROUND_DEFS: RoundDef[] = [
-  { cardCount: 3, stdSides: 5, oddType: 'extra-side',  oddSides: 6 },
-  { cardCount: 4, stdSides: 6, oddType: 'extra-side',  oddSides: 7 },
-  { cardCount: 5, stdSides: 7, oddType: 'extra-side',  oddSides: 8 },
-  { cardCount: 5, stdSides: 8, oddType: 'displaced',   displaceAmount: -0.22 },
-  { cardCount: 5, stdSides: 9, oddType: 'displaced',   displaceAmount: -0.17 },
+interface SetTemplate { stdDef: ShapeDef; oddDef: ShapeDef; }
+
+const TIER1: SetTemplate[] = [
+  { stdDef: { sides: 3 },                                   oddDef: { sides: 5 } },
+  { stdDef: { sides: 4 },                                   oddDef: { sides: 7 } },
+  { stdDef: { sides: 5 },                                   oddDef: { sides: 8 } },
+  { stdDef: { sides: 6 },                                   oddDef: { sides: 3 } },
+  { stdDef: { sides: 4 },                                   oddDef: { sides: 5, isStar: true, innerFrac: 0.40 } },
+  { stdDef: { sides: 5, isStar: true, innerFrac: 0.40 },    oddDef: { sides: 4, isStar: true, innerFrac: 0.40 } },
 ];
 
-interface RoundConfig {
-  def: RoundDef;
-  rotation: number;
+const TIER2: SetTemplate[] = [
+  { stdDef: { sides: 5 },                                   oddDef: { sides: 6 } },
+  { stdDef: { sides: 6 },                                   oddDef: { sides: 7 } },
+  { stdDef: { sides: 7 },                                   oddDef: { sides: 8 } },
+  { stdDef: { sides: 5, isStar: true, innerFrac: 0.42 },    oddDef: { sides: 6, isStar: true, innerFrac: 0.42 } },
+  { stdDef: { sides: 6 },                                   oddDef: { sides: 6, displaceAmt: -0.24 } },
+  { stdDef: { sides: 5 },                                   oddDef: { sides: 5, displaceAmt: -0.26 } },
+];
+
+const TIER3: SetTemplate[] = [
+  { stdDef: { sides: 8 },                                   oddDef: { sides: 8, displaceAmt: -0.10 } },
+  { stdDef: { sides: 7 },                                   oddDef: { sides: 7, displaceAmt: -0.11 } },
+  { stdDef: { sides: 9 },                                   oddDef: { sides: 9, displaceAmt: -0.09 } },
+  { stdDef: { sides: 6 },                                   oddDef: { sides: 6, displaceAmt: -0.10 } },
+  { stdDef: { sides: 5, isStar: true, innerFrac: 0.44 },    oddDef: { sides: 5, isStar: true, innerFrac: 0.36 } },
+  { stdDef: { sides: 7, displaceAmt: -0.12, flipX: false }, oddDef: { sides: 7, displaceAmt: -0.12, flipX: true } },
+];
+
+// ── Set config ───────────────────────────────────────────────────────────────
+interface SetConfig {
+  stdDef: ShapeDef;
+  oddDef: ShapeDef;
   oddIdx: number;
+  rotations: number[];
   bgColors: string[];
   displaceVertex: number;
 }
 
-function generateRounds(roomCode: string): RoundConfig[] {
-  const rng = mulberry32(hashCode(roomCode + ':odd'));
-  return ROUND_DEFS.map((def) => {
-    const rotation = rng() * Math.PI * 2;
-    const oddIdx = Math.floor(rng() * def.cardCount);
-    const usedColors = new Set<string>();
-    const bgColors: string[] = [];
-    for (let c = 0; c < def.cardCount; c++) {
-      let color: string;
-      let tries = 0;
-      do { color = CARD_COLORS[Math.floor(rng() * CARD_COLORS.length)]; tries++; }
-      while (usedColors.has(color) && tries < 20);
-      usedColors.add(color);
-      bgColors.push(color);
-    }
-    const displaceVertex = Math.floor(rng() * def.stdSides);
-    return { def, rotation, oddIdx, bgColors, displaceVertex };
-  });
+function generateSet(roomCode: string, setIdx: number, elapsedS: number): SetConfig {
+  const rng = mulberry32(hashCode(roomCode + ':set:' + setIdx));
+
+  // Layer 4: oddIdx is the FIRST rng call — server mirrors this to validate
+  const oddIdx = Math.floor(rng() * 6);
+
+  const templates = elapsedS < 10 ? TIER1 : elapsedS < 20 ? TIER2 : TIER3;
+  const { stdDef, oddDef } = templates[Math.floor(rng() * templates.length)];
+
+  const baseRot = rng() * Math.PI * 2;
+  const isHard  = elapsedS >= 20;
+  const rotations = Array.from({ length: 6 }, () => baseRot + (isHard ? (rng() - 0.5) * 0.30 : 0));
+
+  const maxSides       = Math.max(stdDef.sides, oddDef.sides);
+  const displaceVertex = Math.floor(rng() * maxSides);
+
+  const usedColors = new Set<string>();
+  const bgColors: string[] = [];
+  for (let c = 0; c < 6; c++) {
+    let color: string; let tries = 0;
+    do { color = CARD_COLORS[Math.floor(rng() * CARD_COLORS.length)]; tries++; }
+    while (usedColors.has(color) && tries < 20);
+    usedColors.add(color);
+    bgColors.push(color);
+  }
+
+  return { stdDef, oddDef, oddIdx, rotations, bgColors, displaceVertex };
 }
 
-// ── SVG polygon ───────────────────────────────────────────────────────────────
-function polygonPts(sides: number, cx: number, cy: number, r: number, rotation: number, displaceVertex = -1, displaceAmt = 0): string {
+// ── SVG shape points ─────────────────────────────────────────────────────────
+function shapePts(def: ShapeDef, cx: number, cy: number, r: number, rotation: number, displaceVertex: number): string {
+  const { sides, isStar = false, innerFrac = 0.45, displaceAmt = 0, flipX = false } = def;
+  const totalPts = isStar ? sides * 2 : sides;
   const pts: string[] = [];
-  for (let i = 0; i < sides; i++) {
-    const angle = rotation + (2 * Math.PI * i) / sides;
-    const radius = i === displaceVertex ? r * (1 + displaceAmt) : r;
-    pts.push(`${(cx + radius * Math.cos(angle)).toFixed(2)},${(cy + radius * Math.sin(angle)).toFixed(2)}`);
+  for (let i = 0; i < totalPts; i++) {
+    const angle = rotation + (2 * Math.PI * i) / totalPts;
+    let radius: number;
+    if (isStar) {
+      radius = i % 2 === 0 ? r : r * innerFrac;
+    } else {
+      radius = (displaceAmt !== 0 && i === displaceVertex) ? r * (1 + displaceAmt) : r;
+    }
+    const rawX = cx + radius * Math.cos(angle);
+    const x    = flipX ? (2 * cx - rawX) : rawX;
+    const y    = cy + radius * Math.sin(angle);
+    pts.push(`${x.toFixed(2)},${y.toFixed(2)}`);
   }
   return pts.join(' ');
 }
 
-// ── Shape card ────────────────────────────────────────────────────────────────
-interface CardProps {
-  bgColor: string;
-  sides: number;
-  rotation: number;
-  displaceVertex?: number;
-  displaceAmt?: number;
-  state: 'idle' | 'correct' | 'wrong';
-  onClick: () => void;
-  disabled: boolean;
+// ── Burst particles ──────────────────────────────────────────────────────────
+const BURST_COLORS = ['#00ff88','#a855f7','#fff','#00ffaa','#c084fc','#34d399'];
+function BurstParticles() {
+  const pts = useMemo(() => Array.from({ length: 24 }, (_, i) => {
+    const a = (i / 24) * Math.PI * 2 + (Math.random() - 0.5) * 0.55;
+    const d = 65 + Math.random() * 140;
+    return {
+      px: `${Math.cos(a) * d}px`, py: `${Math.sin(a) * d}px`,
+      pr: `${(Math.random() - 0.5) * 720}deg`,
+      w: 3 + Math.random() * 10, h: 3 + Math.random() * 6,
+      color: BURST_COLORS[Math.floor(Math.random() * BURST_COLORS.length)],
+      delay: Math.random() * 0.08, dur: 0.32 + Math.random() * 0.35,
+      br: Math.random() > 0.45 ? '50%' : '2px',
+    };
+  }), []);
+  return (
+    <div style={{ position: 'absolute', left: '50%', top: '50%', pointerEvents: 'none', zIndex: 30 }}>
+      {pts.map((p, i) => (
+        <div key={i} style={{
+          position: 'absolute', width: p.w, height: p.h, background: p.color, borderRadius: p.br,
+          '--px': p.px, '--py': p.py, '--pr': p.pr,
+          animation: `burstPt ${p.dur}s ${p.delay}s ease-out both`,
+        } as CSSProperties} />
+      ))}
+    </div>
+  );
 }
 
-function ShapeCard({ bgColor, sides, rotation, displaceVertex = -1, displaceAmt = 0, state, onClick, disabled }: CardProps) {
+// ── Shape card ───────────────────────────────────────────────────────────────
+type CardState = 'idle' | 'correct' | 'wrong' | 'shattering';
+
+const SHATTER_DIRS = [
+  { dx: -260, dy: -150 }, { dx: 0, dy: -210 }, { dx: 260, dy: -150 },
+  { dx: -260, dy: 150 },  { dx: 0, dy: 210 },  { dx: 260, dy: 150 },
+];
+
+interface CardProps {
+  bgColor: string;
+  shapeDef: ShapeDef;
+  rotation: number;
+  displaceVertex: number;
+  state: CardState;
+  onClick: () => void;
+  disabled: boolean;
+  cardIdx: number;
+}
+
+function ShapeCard({ bgColor, shapeDef, rotation, displaceVertex, state, onClick, disabled, cardIdx }: CardProps) {
+  const dir = SHATTER_DIRS[cardIdx] ?? { dx: 0, dy: 100 };
   const borderColor =
-    state === 'correct' ? '#00ff88' :
-    state === 'wrong'   ? '#ef4444' :
+    state === 'correct'    ? '#00ff88' :
+    state === 'wrong'      ? '#ef4444' :
+    state === 'shattering' ? 'rgba(239,68,68,0.3)' :
     'rgba(255,255,255,0.12)';
   const glow =
-    state === 'correct' ? '0 0 28px rgba(0,255,136,0.55)' :
-    state === 'wrong'   ? '0 0 28px rgba(239,68,68,0.5)'  :
-    'none';
-  const scale =
-    state === 'wrong'   ? 'scale(0.93)' :
-    state === 'correct' ? 'scale(1.03)' :
-    'scale(1)';
+    state === 'correct' ? '0 0 32px rgba(0,255,136,0.8), 0 0 64px rgba(0,255,136,0.3)' :
+    state === 'wrong'   ? '0 0 28px rgba(239,68,68,0.5)' : 'none';
+  const anim =
+    state === 'shattering' ? 'shatterFly2d 0.65s cubic-bezier(0.4,0,1,1) forwards' :
+    state === 'correct'    ? 'correctExpand 0.55s cubic-bezier(0.34,1.56,0.64,1) forwards' : 'none';
 
   return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      style={{
-        flex: 1,
-        aspectRatio: '0.75',
-        borderRadius: 14,
-        background: bgColor,
-        border: `2px solid ${borderColor}`,
-        boxShadow: glow,
-        cursor: disabled ? 'default' : 'pointer',
-        padding: 0,
-        overflow: 'hidden',
-        transition: 'border-color 0.12s, box-shadow 0.12s, transform 0.1s',
-        transform: scale,
-        position: 'relative',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}
-    >
-      <svg viewBox="0 0 100 100" style={{ width: '72%', height: '72%' }}>
+    <button onClick={onClick} disabled={disabled} style={{
+      aspectRatio: '1',
+      borderRadius: 12,
+      background: bgColor,
+      border: `2px solid ${borderColor}`,
+      boxShadow: glow,
+      cursor: disabled ? 'default' : 'pointer',
+      padding: 0,
+      overflow: 'hidden',
+      transition: (state === 'shattering' || state === 'correct') ? 'none' : 'border-color 0.12s, box-shadow 0.12s',
+      position: 'relative',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      animation: anim,
+      '--sdx': `${dir.dx}px`,
+      '--sdy': `${dir.dy}px`,
+    } as CSSProperties}>
+      <svg viewBox="0 0 100 100" style={{ width: '66%', height: '66%' }}>
         <polygon
-          points={polygonPts(sides, 50, 50, 34, rotation, displaceVertex, displaceAmt)}
-          fill="white"
-          stroke="white"
-          strokeWidth="1"
-          strokeLinejoin="round"
+          points={shapePts(shapeDef, 50, 50, 33, rotation, displaceVertex)}
+          fill="white" stroke="white" strokeWidth="1" strokeLinejoin="round"
         />
       </svg>
       {state === 'correct' && (
         <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,255,136,0.18)' }}>
-          <span style={{ fontSize: '2rem', lineHeight: 1 }}>✓</span>
+          <span style={{ fontSize: '1.6rem', lineHeight: 1 }}>✓</span>
         </div>
       )}
       {state === 'wrong' && (
         <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(239,68,68,0.22)' }}>
-          <span style={{ fontSize: '2rem', lineHeight: 1 }}>✗</span>
+          <span style={{ fontSize: '1.6rem', lineHeight: 1 }}>✗</span>
         </div>
       )}
     </button>
@@ -153,41 +226,88 @@ function ShapeCard({ bgColor, sides, rotation, displaceVertex = -1, displaceAmt 
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
-interface Props {
-  config: GameConfig;
-  socket: Socket;
-  onResult: (r: ResultData) => void;
-}
+interface Props { config: GameConfig; socket: Socket; onResult: (r: ResultData) => void; }
 
 export default function GameScreen({ config, socket, onResult }: Props) {
-  const [phase, setPhase] = useState<'countdown' | 'roundAnnounce' | 'playing' | 'roundResult' | 'waiting' | 'done'>('countdown');
-  const [countdown, setCountdown] = useState(3);
-  const [roundIdx, setRoundIdx] = useState(0);
-  const [clickedCard, setClickedCard]   = useState<number | null>(null);
+  const [phase, setPhase]               = useState<'countdown' | 'playing' | 'lockout' | 'waiting' | 'done'>('countdown');
+  const [countdown, setCountdown]       = useState(3);
+  const [showGo, setShowGo]             = useState(false);
+  const [timeLeft, setTimeLeft]         = useState(GAME_DURATION_S);
+  const [setIdx, setSetIdx]             = useState(0);
+  const [currentSet, setCurrentSet]     = useState<SetConfig | null>(null);
   const [wrongCard, setWrongCard]       = useState<number | null>(null);
-  const [roundResults, setRoundResults] = useState<RoundResult[]>([]);
-  const [opponentCorrect, setOpponentCorrect] = useState(0);
+  const [correctCard, setCorrectCard]   = useState<number | null>(null);
+  const [burstKey, setBurstKey]         = useState(0);
   const [flashScreen, setFlashScreen]   = useState<'correct' | 'wrong' | null>(null);
-  const [timeLeft, setTimeLeft]         = useState(30);
-  const [hint, setHint]                 = useState('');
+  const [wrongXKey, setWrongXKey]       = useState(0);
+  const [lockoutMs, setLockoutMs]       = useState(0);
+  const [correctCount, setCorrectCount] = useState(0);
+  const [opponentCorrect, setOpponentCorrect] = useState(0);
 
-  const roundResultsRef = useRef<RoundResult[]>([]);
-  const roundStartRef   = useRef(0);
-  const gameEndRef      = useRef(false);
-  const phaseRef        = useRef<string>('countdown');
-  const afkTimerRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const tickIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const rounds = useMemo(() => generateRounds(config.roomCode), [config.roomCode]);
+  const containerRef      = useRef<HTMLDivElement>(null);
+  const phaseRef          = useRef<string>('countdown');
+  const setIdxRef         = useRef(0);
+  const setArmTimeRef     = useRef(0);
+  const wrongCountInSet   = useRef(0);
+  const correctCountRef   = useRef(0);
+  const attemptedCountRef = useRef(0);
+  const totalReactionMsRef= useRef(0);
+  const setStartRef       = useRef(0);
+  const gameEndRef        = useRef(false);
+  const gameStartRef      = useRef(0);
+  const tickRef           = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lockoutRafRef     = useRef<number>(0);
+  const wrongXTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { phaseRef.current = phase; }, [phase]);
 
   function clearTimers() {
-    if (afkTimerRef.current)  clearTimeout(afkTimerRef.current);
-    if (tickIntervalRef.current) clearInterval(tickIntervalRef.current);
+    if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
+    if (lockoutRafRef.current) { cancelAnimationFrame(lockoutRafRef.current); lockoutRafRef.current = 0; }
   }
 
-  // ── Countdown ─────────────────────────────────────────────────────────────
+  function triggerShake() {
+    const el = containerRef.current;
+    if (!el) return;
+    el.style.animation = 'none';
+    void el.offsetHeight;
+    el.style.animation = 'cameraShake 0.44s ease-out';
+    setTimeout(() => { if (el) el.style.animation = ''; }, 480);
+  }
+
+  function loadSet(idx: number, elapsed: number) {
+    const set = generateSet(config.roomCode, idx, elapsed);
+    setIdxRef.current = idx;
+    setSetIdx(idx);
+    setCurrentSet(set);
+    setWrongCard(null);
+    setCorrectCard(null);
+    wrongCountInSet.current = 0;
+    setStartRef.current = Date.now();
+    setArmTimeRef.current = Date.now() + ARM_DELAY_MS;
+    setPhase('playing');
+    phaseRef.current = 'playing';
+  }
+
+  function startGame() {
+    gameStartRef.current = Date.now();
+    loadSet(0, 0);
+
+    tickRef.current = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - gameStartRef.current) / 1000);
+      const remaining = Math.max(0, GAME_DURATION_S - elapsed);
+      setTimeLeft(remaining);
+      if (remaining <= 0) {
+        clearInterval(tickRef.current!);
+        tickRef.current = null;
+        if (phaseRef.current === 'playing' || phaseRef.current === 'lockout') {
+          finishGame();
+        }
+      }
+    }, 200);
+  }
+
+  // ── Countdown ───────────────────────────────────────────────────────────────
   useEffect(() => {
     let n = 3;
     const id = setInterval(() => {
@@ -195,9 +315,8 @@ export default function GameScreen({ config, socket, onResult }: Props) {
       if (n <= 0) {
         clearInterval(id);
         setCountdown(0);
-        setPhase('roundAnnounce');
-        phaseRef.current = 'roundAnnounce';
-        setTimeout(() => startRound(0), 1100);
+        setShowGo(true);
+        setTimeout(() => { setShowGo(false); startGame(); }, 900);
       } else {
         setCountdown(n);
       }
@@ -205,7 +324,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
     return () => clearInterval(id);
   }, []);
 
-  // ── Socket ─────────────────────────────────────────────────────────────────
+  // ── Socket ──────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (config.solo) return;
     socket.on('odd:opponent-round', ({ correct }: { correct: boolean }) => {
@@ -215,343 +334,391 @@ export default function GameScreen({ config, socket, onResult }: Props) {
       clearTimers();
       phaseRef.current = 'done';
       setPhase('done');
-      const results = roundResultsRef.current;
-      const myCorrect = results.filter(r => r.correct).length;
-      const myTotalMs = results.reduce((s, r) => s + r.reactionMs, 0);
+      const myCorrect   = data.myCorrect  ?? correctCountRef.current;
+      const myAttempted = attemptedCountRef.current;
+      const myTotalMs   = totalReactionMsRef.current;
       onResult({
-        won: data.won, myScore: myCorrect * 100000 - myTotalMs,
-        myCorrect, myTotalMs, roundResults: results,
+        won: data.won,
+        myScore: data.myScore ?? myCorrect * 100_000 - myTotalMs,
+        myCorrect, myAttempted, myTotalMs,
         opponentScore: data.opponentScore ?? null,
         opponentCorrect: data.opponentCorrect ?? null,
         winnerName: data.winnerName,
+        players: data.players ?? undefined,
       });
     });
     return () => { socket.off('odd:opponent-round'); socket.off('odd:result'); };
   }, [socket, onResult, config.solo]);
 
-  // ── Cleanup on unmount ─────────────────────────────────────────────────────
   useEffect(() => () => clearTimers(), []);
 
-  function startRound(idx: number) {
-    setRoundIdx(idx);
-    setClickedCard(null);
-    setWrongCard(null);
-    setTimeLeft(30);
-    setHint('');
-    setPhase('playing');
-    phaseRef.current = 'playing';
-    roundStartRef.current = Date.now();
-
-    clearTimers();
-
-    // 1-second countdown tick
-    tickIntervalRef.current = setInterval(() => {
-      setTimeLeft(t => {
-        const next = t - 1;
-        if (next <= 0) clearInterval(tickIntervalRef.current!);
-        return Math.max(0, next);
-      });
-    }, 1000);
-
-    // 30-second AFK timeout → end the whole game
-    afkTimerRef.current = setTimeout(() => {
-      if (phaseRef.current !== 'playing') return;
-      clearInterval(tickIntervalRef.current!);
-      const result: RoundResult = { correct: false, reactionMs: ROUND_TIMEOUT_MS };
-      const newResults = [...roundResultsRef.current, result];
-      roundResultsRef.current = newResults;
-      setRoundResults([...newResults]);
-      finishGame(newResults);
-    }, ROUND_TIMEOUT_MS);
-  }
-
-  function handleCardClick(rIdx: number, cardIdx: number) {
+  // ── Handle click ────────────────────────────────────────────────────────────
+  const handleCardClick = useCallback((cardIdx: number) => {
     if (phaseRef.current !== 'playing') return;
-    const round = rounds[rIdx];
-    const correct = cardIdx === round.oddIdx;
+    if (!currentSet) return;
+    if (Date.now() < setArmTimeRef.current) return; // Layer 2: arm delay
 
-    if (!correct) {
-      // Flash wrong card, stay in playing phase
+    attemptedCountRef.current += 1;
+    const isCorrect = cardIdx === currentSet.oddIdx;
+
+    if (!isCorrect) {
+      // Wrong answer
+      wrongCountInSet.current += 1;
+      const lockDuration = LOCKOUT_MS[Math.min(wrongCountInSet.current - 1, LOCKOUT_MS.length - 1)];
+
       setWrongCard(cardIdx);
-      setHint('✗  Not that one — try again');
       setFlashScreen('wrong');
-      setTimeout(() => setFlashScreen(null), 200);
-      setTimeout(() => { setWrongCard(null); setHint(''); }, WRONG_FLASH_MS);
+      triggerShake();
+      if (wrongXTimerRef.current) clearTimeout(wrongXTimerRef.current);
+      setWrongXKey(k => k + 1);
+      wrongXTimerRef.current = setTimeout(() => setWrongXKey(0), 520);
+      setTimeout(() => setFlashScreen(null), 220);
+
+      // Start lockout
+      phaseRef.current = 'lockout';
+      setPhase('lockout');
+      const end = Date.now() + lockDuration;
+      setLockoutMs(lockDuration);
+
+      const tick = () => {
+        const remaining = end - Date.now();
+        if (remaining <= 0) {
+          setLockoutMs(0);
+          setWrongCard(null);
+          if (phaseRef.current === 'lockout') {
+            phaseRef.current = 'playing';
+            setPhase('playing');
+          }
+          return;
+        }
+        setLockoutMs(remaining);
+        lockoutRafRef.current = requestAnimationFrame(tick);
+      };
+      lockoutRafRef.current = requestAnimationFrame(tick);
       return;
     }
 
-    // Correct answer — clear AFK timer
+    // Correct answer
     clearTimers();
-    const reactionMs = Math.min(Date.now() - roundStartRef.current, ROUND_TIMEOUT_MS);
-
-    setClickedCard(cardIdx);
-    setPhase('roundResult');
-    phaseRef.current = 'roundResult';
+    const reactionMs = Date.now() - setStartRef.current;
+    correctCountRef.current += 1;
+    totalReactionMsRef.current += reactionMs;
+    setCorrectCount(correctCountRef.current);
+    setCorrectCard(cardIdx);
     setFlashScreen('correct');
-    setTimeout(() => setFlashScreen(null), 220);
-
-    const result: RoundResult = { correct: true, reactionMs };
-    const newResults = [...roundResultsRef.current, result];
-    roundResultsRef.current = newResults;
-    setRoundResults([...newResults]);
+    setBurstKey(k => k + 1);
+    setTimeout(() => setFlashScreen(null), 200);
 
     if (!config.solo) {
-      socket.emit('odd:round', { roomCode: config.roomCode, correct: true });
+      socket.emit('odd:answer', { roomCode: config.roomCode, setIdx: setIdxRef.current, shapeIdx: cardIdx });
     }
 
-    setTimeout(() => {
-      const nextIdx = rIdx + 1;
-      if (nextIdx >= TOTAL_ROUNDS) {
-        finishGame(newResults);
-      } else {
-        setPhase('roundAnnounce');
-        phaseRef.current = 'roundAnnounce';
-        setTimeout(() => startRound(nextIdx), 1100);
-      }
-    }, CORRECT_PAUSE_MS);
-  }
+    // Check if game time is up before advancing
+    const elapsed = (Date.now() - gameStartRef.current) / 1000;
+    if (elapsed >= GAME_DURATION_S) {
+      finishGame();
+      return;
+    }
 
-  function finishGame(results: RoundResult[]) {
+    // Advance immediately — instant next set
+    const nextIdx = setIdxRef.current + 1;
+    loadSet(nextIdx, elapsed);
+
+    // Restart game tick
+    tickRef.current = setInterval(() => {
+      const e = Math.floor((Date.now() - gameStartRef.current) / 1000);
+      const r = Math.max(0, GAME_DURATION_S - e);
+      setTimeLeft(r);
+      if (r <= 0) {
+        clearInterval(tickRef.current!);
+        tickRef.current = null;
+        if (phaseRef.current === 'playing' || phaseRef.current === 'lockout') finishGame();
+      }
+    }, 200);
+  }, [currentSet, config, socket]);
+
+  function finishGame() {
     if (gameEndRef.current) return;
     gameEndRef.current = true;
     clearTimers();
-    const myCorrect = results.filter(r => r.correct).length;
-    const myTotalMs = results.reduce((s, r) => s + r.reactionMs, 0);
-    const myScore = myCorrect * 100000 - myTotalMs;
+    phaseRef.current = 'done';
+    setPhase('done');
+
+    const myCorrect   = correctCountRef.current;
+    const myAttempted = attemptedCountRef.current;
+    const myTotalMs   = totalReactionMsRef.current;
+    const myScore     = myCorrect * 100_000 - myTotalMs;
 
     if (config.solo) {
-      phaseRef.current = 'done';
-      setPhase('done');
-      onResult({
-        won: true, myScore, myCorrect, myTotalMs,
-        roundResults: results,
-        opponentScore: null, opponentCorrect: null,
-        winnerName: config.playerName,
-      });
+      onResult({ won: true, myScore, myCorrect, myAttempted, myTotalMs, opponentScore: null, opponentCorrect: null, winnerName: config.playerName });
     } else {
       setPhase('waiting');
       phaseRef.current = 'waiting';
-      socket.emit('odd:finish', { roomCode: config.roomCode, score: myScore, correct: myCorrect, totalMs: myTotalMs });
+      setPhase('waiting');
+      socket.emit('odd:finish', { roomCode: config.roomCode, correct: myCorrect, attempted: myAttempted, totalMs: myTotalMs });
     }
   }
 
-  const currentRound = rounds[roundIdx];
-  const def = currentRound.def;
-  const correctCount = roundResults.filter(r => r.correct).length;
-  const isDanger = timeLeft <= 10 && phase === 'playing';
+  const isDanger  = timeLeft <= 10 && (phase === 'playing' || phase === 'lockout');
+  const containerBg = isDanger ? '#190305' : '#03030a';
 
   return (
-    <div style={{
+    <div ref={containerRef} style={{
       width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
-      background: '#03030a', userSelect: 'none', position: 'relative',
+      background: containerBg, userSelect: 'none', position: 'relative',
+      transition: 'background 1.5s ease',
     }}>
       <style>{`
-        @keyframes popIn { from { transform: scale(0.5); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-        @keyframes dotPulse { 0%,100%{opacity:0.2;transform:scale(0.8)} 50%{opacity:1;transform:scale(1.2)} }
-        @keyframes hintFade { 0%{opacity:0;transform:translateY(4px)} 15%{opacity:1;transform:translateY(0)} 80%{opacity:1} 100%{opacity:0} }
-        @keyframes timerPulse { 0%,100%{opacity:1} 50%{opacity:0.45} }
-        @keyframes roundSlam { 0% { transform: scale(1.6); opacity: 0; } 60% { transform: scale(0.95); opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
-        @keyframes roundLabel { from { opacity: 0; letter-spacing: 0.55em; } to { opacity: 1; letter-spacing: 0.35em; } }
+        @keyframes countdownSlam {
+          0%   { transform:scale(2.2);  opacity:0; }
+          18%  { transform:scale(0.92); opacity:1; }
+          28%  { transform:scale(1);    opacity:1; }
+          72%  { transform:scale(1);    opacity:1; }
+          100% { transform:scale(0.62); opacity:0; }
+        }
+        @keyframes countdownGo {
+          0%   { transform:scale(2.8);  opacity:0; }
+          14%  { transform:scale(0.92); opacity:1; }
+          30%  { transform:scale(1.05); opacity:1; }
+          100% { transform:scale(1.05); opacity:1; }
+        }
+        @keyframes cameraShake {
+          0%,100% { transform:translate(0,0) rotate(0); }
+          10%     { transform:translate(-8px,-4px) rotate(-0.6deg); }
+          22%     { transform:translate(9px,4px)   rotate(0.6deg); }
+          34%     { transform:translate(-6px,3px)  rotate(-0.4deg); }
+          46%     { transform:translate(5px,-5px)  rotate(0.4deg); }
+          58%     { transform:translate(-3px,2px)  rotate(-0.2deg); }
+          70%     { transform:translate(2px,-1px)  rotate(0.1deg); }
+          84%     { transform:translate(-1px,1px)  rotate(0); }
+        }
+        @keyframes wrongXSlam {
+          0%   { transform:scale(0.2)  rotate(-12deg); opacity:0; }
+          22%  { transform:scale(1.15) rotate(2deg);   opacity:1; }
+          38%  { transform:scale(1)    rotate(0);      opacity:1; }
+          72%  { opacity:1; }
+          100% { opacity:0; transform:scale(0.95) rotate(0); }
+        }
+        @keyframes shatterFly2d {
+          0%   { transform:scale(1) translate(0,0) rotate(0); opacity:1; filter:brightness(1); }
+          12%  { transform:scale(1.09) translate(0,-6px) rotate(0); opacity:1; filter:brightness(2); }
+          100% { transform:scale(0.1) translate(var(--sdx),var(--sdy)) rotate(40deg); opacity:0; filter:brightness(0.4); }
+        }
+        @keyframes correctExpand {
+          0%   { transform:scale(1.03); filter:brightness(1); }
+          35%  { transform:scale(1.14); filter:brightness(1.5); }
+          65%  { transform:scale(1.10); filter:brightness(1.2); }
+          100% { transform:scale(1.08); filter:brightness(1.1); }
+        }
+        @keyframes burstPt {
+          0%   { opacity:1; transform:translate(-50%,-50%) scale(1); }
+          100% { opacity:0; transform:translate(calc(-50% + var(--px)),calc(-50% + var(--py))) scale(0.1) rotate(var(--pr)); }
+        }
+        @keyframes timerPulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
+        @keyframes dotPulse   { 0%,100%{opacity:0.2;transform:scale(0.8)} 50%{opacity:1;transform:scale(1.2)} }
+        @keyframes lockoutFade { 0%{opacity:0} 100%{opacity:1} }
       `}</style>
 
-      {/* Flash overlay */}
-      {flashScreen && (
-        <div style={{
-          position: 'absolute', inset: 0, zIndex: 50, pointerEvents: 'none',
-          background: flashScreen === 'correct' ? 'rgba(0,255,136,0.1)' : 'rgba(239,68,68,0.12)',
-        }} />
-      )}
-
-      {/* Round announce — full-screen splash */}
-      {phase === 'roundAnnounce' && (
-        <div style={{
-          position: 'absolute', inset: 0, zIndex: 40,
-          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16,
-          background: 'radial-gradient(ellipse 70% 55% at 50% 50%, rgba(168,85,247,0.08) 0%, transparent 70%), #03030a',
-          pointerEvents: 'none',
+      {/* ── Wrong X overlay ─────────────────────────────────────────────────── */}
+      {wrongXKey > 0 && (
+        <div key={wrongXKey} style={{
+          position: 'absolute', inset: 0, zIndex: 60, pointerEvents: 'none',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: 'rgba(239,68,68,0.04)',
         }}>
-          <div style={{
-            fontSize: '0.65rem', fontWeight: 800, textTransform: 'uppercase', color: 'rgba(168,85,247,0.55)',
-            animation: 'roundLabel 0.4s ease-out both',
-            letterSpacing: '0.35em',
-          }}>
-            {roundIdx === 0 ? 'Get Ready' : `Round ${roundIdx} Complete`}
-          </div>
-          <div style={{
-            fontSize: 'clamp(5rem,18vw,9rem)', fontWeight: 900, letterSpacing: '-0.03em', lineHeight: 1,
-            color: '#a855f7',
-            textShadow: '0 0 80px rgba(168,85,247,0.7), 0 0 160px rgba(168,85,247,0.25)',
-            animation: 'roundSlam 0.38s cubic-bezier(0.22,1,0.36,1) both',
-          }}>
-            ROUND {roundIdx + 1}
-          </div>
-          <div style={{
-            fontSize: '0.8rem', fontWeight: 600, color: 'rgba(255,255,255,0.28)', letterSpacing: '0.06em',
-            animation: 'roundLabel 0.5s 0.1s ease-out both',
-          }}>
-            {roundIdx >= 3 ? 'Same shape · one vertex is displaced' : `${def.cardCount} cards · find the odd shape`}
-          </div>
+          <span style={{
+            fontSize: 'clamp(7rem,20vw,12rem)', fontWeight: 900, color: '#ef4444', lineHeight: 1,
+            textShadow: '0 0 60px rgba(239,68,68,0.9), 0 0 120px rgba(239,68,68,0.45)',
+            animation: 'wrongXSlam 0.5s ease-out both',
+          }}>✗</span>
         </div>
       )}
 
-      {/* HUD */}
+      {/* ── Screen flash ────────────────────────────────────────────────────── */}
+      {flashScreen && (
+        <div style={{
+          position: 'absolute', inset: 0, zIndex: 50, pointerEvents: 'none',
+          background: flashScreen === 'correct' ? 'rgba(0,255,136,0.10)' : 'rgba(239,68,68,0.18)',
+        }} />
+      )}
+
+      {/* ── Danger vignette ─────────────────────────────────────────────────── */}
+      {isDanger && (
+        <div style={{
+          position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 1,
+          background: 'radial-gradient(ellipse 80% 80% at 50% 50%, transparent 30%, rgba(239,68,68,0.14) 100%)',
+          animation: 'lockoutFade 1.5s ease both',
+        }} />
+      )}
+
+      {/* ── HUD ─────────────────────────────────────────────────────────────── */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: '0 24px', height: 52, flexShrink: 0,
         background: 'rgba(0,0,0,0.6)',
-        borderBottom: `1px solid ${isDanger ? 'rgba(239,68,68,0.3)' : 'rgba(168,85,247,0.12)'}`,
+        borderBottom: `1px solid ${isDanger ? 'rgba(239,68,68,0.28)' : 'rgba(168,85,247,0.12)'}`,
         backdropFilter: 'blur(8px)',
         transition: 'border-color 0.3s',
+        position: 'relative', zIndex: 10,
       }}>
-        {/* Correct count */}
-        <div style={{ minWidth: 120, display: 'flex', flexDirection: 'column', gap: 1 }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
-            <span style={{ fontSize: '1.4rem', fontWeight: 900, color: '#a855f7', fontVariantNumeric: 'tabular-nums' }}>
-              {correctCount}
-            </span>
-            <span style={{ fontSize: '0.6rem', fontWeight: 700, color: 'rgba(255,255,255,0.3)', letterSpacing: '0.12em', textTransform: 'uppercase' }}>
-              / 5 correct
-            </span>
-          </div>
+        <div style={{ minWidth: 110, display: 'flex', alignItems: 'baseline', gap: 5 }}>
+          <span style={{ fontSize: '1.6rem', fontWeight: 900, color: '#a855f7', fontVariantNumeric: 'tabular-nums' }}>
+            {correctCount}
+          </span>
+          <span style={{ fontSize: '0.58rem', fontWeight: 700, color: 'rgba(255,255,255,0.28)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+            correct
+          </span>
         </div>
 
-        {/* Round dots + timer */}
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-          <div style={{ display: 'flex', gap: 5 }}>
-            {Array.from({ length: TOTAL_ROUNDS }, (_, i) => {
-              const rr = roundResults[i];
-              const isCurrent = i === roundIdx && (phase === 'playing' || phase === 'roundResult');
-              return (
-                <div key={i} style={{
-                  width: 10, height: 10, borderRadius: '50%',
-                  background: rr ? (rr.correct ? '#00ff88' : '#ef4444') : isCurrent ? '#a855f7' : 'rgba(255,255,255,0.12)',
-                  boxShadow: isCurrent ? '0 0 8px #a855f788' : 'none',
-                  transition: 'all 0.2s',
-                }} />
-              );
-            })}
-          </div>
-          {/* Timer */}
-          {(phase === 'playing' || phase === 'roundResult') && (
-            <div style={{
-              fontSize: '0.7rem', fontWeight: 800, letterSpacing: '0.08em',
-              color: isDanger ? '#ef4444' : 'rgba(255,255,255,0.3)',
-              fontVariantNumeric: 'tabular-nums',
-              animation: isDanger && timeLeft <= 5 ? 'timerPulse 0.6s ease-in-out infinite' : 'none',
-              transition: 'color 0.3s',
-            }}>
-              {timeLeft}s
-            </div>
-          )}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0 }}>
+          <span style={{
+            fontSize: '2.2rem', fontWeight: 900, lineHeight: 1,
+            color: isDanger ? '#ef4444' : '#fff',
+            fontVariantNumeric: 'tabular-nums',
+            textShadow: isDanger ? '0 0 24px rgba(239,68,68,0.7)' : 'none',
+            animation: isDanger && timeLeft <= 5 ? 'timerPulse 0.55s ease-in-out infinite' : 'none',
+            transition: 'color 0.4s, text-shadow 0.4s',
+          }}>
+            {timeLeft}
+          </span>
+          <span style={{ fontSize: '0.52rem', fontWeight: 700, letterSpacing: '0.16em', color: 'rgba(255,255,255,0.2)', marginTop: -1 }}>
+            SECONDS
+          </span>
         </div>
 
-        {/* Opponent / mode */}
-        <div style={{ minWidth: 120, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 1 }}>
+        <div style={{ minWidth: 110, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 1 }}>
           {config.solo ? (
-            <span style={{ fontSize: '0.62rem', color: 'rgba(168,85,247,0.4)', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+            <span style={{ fontSize: '0.6rem', color: 'rgba(168,85,247,0.4)', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
               Solo Practice
             </span>
           ) : (
             <>
-              <span style={{ fontSize: '0.58rem', color: 'rgba(255,255,255,0.28)', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+              <span style={{ fontSize: '0.56rem', color: 'rgba(255,255,255,0.28)', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
                 {config.opponentName}
               </span>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
-                <span style={{ fontSize: '1.1rem', fontWeight: 900, color: config.opponentColor, fontVariantNumeric: 'tabular-nums' }}>
+                <span style={{ fontSize: '1.2rem', fontWeight: 900, color: config.opponentColor, fontVariantNumeric: 'tabular-nums' }}>
                   {opponentCorrect}
                 </span>
-                <span style={{ fontSize: '0.55rem', fontWeight: 700, color: 'rgba(255,255,255,0.25)', letterSpacing: '0.1em' }}>/ 5</span>
               </div>
             </>
           )}
         </div>
       </div>
 
-      {/* Timer bar */}
-      {(phase === 'playing') && (
-        <div style={{ height: 3, background: 'rgba(255,255,255,0.05)', flexShrink: 0 }}>
-          <div style={{
-            height: '100%',
-            width: `${(timeLeft / 30) * 100}%`,
-            background: isDanger ? '#ef4444' : '#a855f7',
-            transition: 'width 1s linear, background 0.3s',
-            boxShadow: isDanger ? '0 0 8px #ef4444' : '0 0 8px #a855f766',
-          }} />
-        </div>
-      )}
+      {/* ── Timer bar ───────────────────────────────────────────────────────── */}
+      <div style={{ height: 3, background: 'rgba(255,255,255,0.05)', flexShrink: 0, position: 'relative', zIndex: 10 }}>
+        <div style={{
+          height: '100%',
+          width: `${(timeLeft / GAME_DURATION_S) * 100}%`,
+          background: isDanger ? '#ef4444' : '#a855f7',
+          transition: 'width 0.2s linear, background 0.4s',
+          boxShadow: isDanger ? '0 0 8px #ef4444' : '0 0 8px #a855f766',
+        }} />
+      </div>
 
-      {/* Main play area */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 28, padding: '0 24px' }}>
+      {/* ── Main play area ───────────────────────────────────────────────────── */}
+      <div style={{
+        flex: 1, display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center',
+        gap: 18, padding: '12px 20px',
+        position: 'relative', zIndex: 5,
+        overflow: 'hidden',
+      }}>
 
         {/* Countdown */}
         {phase === 'countdown' && (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
-            <div style={{
-              fontSize: countdown === 0 ? '5rem' : '7rem',
-              fontWeight: 800, letterSpacing: '-0.04em',
-              color: countdown === 0 ? '#a855f7' : '#fff',
-              textShadow: `0 0 60px ${countdown === 0 ? '#a855f7' : 'rgba(255,255,255,0.3)'}`,
-              animation: 'popIn 0.3s ease-out',
-            }}>
-              {countdown > 0 ? countdown : 'GO!'}
-            </div>
-            <p style={{ fontSize: '0.78rem', color: 'rgba(255,255,255,0.3)' }}>Spot the odd shape — you must find it to advance</p>
+            {!showGo ? (
+              <div key={countdown} style={{
+                fontSize: '7rem', fontWeight: 900, letterSpacing: '-0.04em',
+                color: '#fff', textShadow: 'rgba(255,255,255,0.4)',
+                animation: 'countdownSlam 0.95s ease-out both',
+              }}>
+                {countdown}
+              </div>
+            ) : (
+              <div key="go" style={{
+                fontSize: '8rem', fontWeight: 900, letterSpacing: '-0.04em',
+                color: '#a855f7', textShadow: '0 0 80px rgba(168,85,247,0.9)',
+                animation: 'countdownGo 0.9s cubic-bezier(0.16,1,0.3,1) both',
+              }}>
+                GO!
+              </div>
+            )}
+            <p style={{ fontSize: '0.78rem', color: 'rgba(255,255,255,0.3)' }}>
+              30 seconds · spot the odd shape · click it
+            </p>
           </div>
         )}
 
-        {/* Round announce — renders inline so layout stays intact; actual content is an absolute overlay */}
-
-        {/* Playing / result */}
-        {(phase === 'playing' || phase === 'roundResult') && (
+        {/* Playing / lockout */}
+        {(phase === 'playing' || phase === 'lockout') && currentSet && (
           <>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5 }}>
-              <span style={{ fontSize: '0.55rem', fontWeight: 800, letterSpacing: '0.28em', color: 'rgba(255,255,255,0.2)', textTransform: 'uppercase' }}>
-                Round {roundIdx + 1} of {TOTAL_ROUNDS}
-              </span>
-              <span style={{ fontSize: '0.85rem', fontWeight: 700, letterSpacing: '0.04em', color: phase === 'roundResult' ? '#00ff88' : 'rgba(255,255,255,0.5)' }}>
-                {phase === 'roundResult' ? '✓  Correct!' : 'Click the odd shape'}
-              </span>
-              {/* Wrong hint (brief) */}
-              {hint && phase === 'playing' && (
-                <span style={{
-                  fontSize: '0.75rem', fontWeight: 600, color: '#ef4444',
-                  animation: 'hintFade 0.45s ease forwards',
-                }}>
-                  {hint}
-                </span>
-              )}
+            <div style={{ fontSize: '0.72rem', fontWeight: 700, letterSpacing: '0.12em', color: 'rgba(255,255,255,0.25)', textTransform: 'uppercase' }}>
+              {phase === 'lockout' ? 'wrong answer — wait' : 'click the odd shape'}
             </div>
 
-            <div style={{
-              display: 'flex', gap: 12, width: '100%',
-              maxWidth: def.cardCount === 3 ? 520 : def.cardCount === 4 ? 660 : 780,
-            }}>
-              {Array.from({ length: def.cardCount }, (_, cardIdx) => {
-                const isOdd = cardIdx === currentRound.oddIdx;
-                let cardState: 'idle' | 'correct' | 'wrong' = 'idle';
-                if (phase === 'roundResult' && clickedCard === cardIdx) cardState = 'correct';
-                if (phase === 'playing' && wrongCard === cardIdx) cardState = 'wrong';
+            <div style={{ position: 'relative', width: '100%', maxWidth: 680 }}>
+              {/* Correct-pick burst */}
+              {burstKey > 0 && (
+                <div key={burstKey} style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 25, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <BurstParticles />
+                </div>
+              )}
 
-                const sides = isOdd
-                  ? (def.oddType === 'extra-side' ? (def.oddSides ?? def.stdSides + 1) : def.stdSides)
-                  : def.stdSides;
-                const displaceVertex = isOdd && def.oddType === 'displaced' ? currentRound.displaceVertex : -1;
-                const displaceAmt    = isOdd && def.oddType === 'displaced' ? (def.displaceAmount ?? 0) : 0;
+              {/* 3×2 card grid */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+                {Array.from({ length: 6 }, (_, cardIdx) => {
+                  const isOdd = cardIdx === currentSet.oddIdx;
+                  const def   = isOdd ? currentSet.oddDef : currentSet.stdDef;
+                  let cardState: CardState = 'idle';
+                  if (phase === 'lockout') {
+                    cardState = wrongCard === cardIdx ? 'wrong' : 'idle';
+                  }
+                  if (correctCard === cardIdx) cardState = 'correct';
 
-                return (
-                  <ShapeCard
-                    key={cardIdx}
-                    bgColor={currentRound.bgColors[cardIdx]}
-                    sides={sides}
-                    rotation={currentRound.rotation}
-                    displaceVertex={displaceVertex}
-                    displaceAmt={displaceAmt}
-                    state={cardState}
-                    onClick={() => handleCardClick(roundIdx, cardIdx)}
-                    disabled={phase !== 'playing'}
-                  />
-                );
-              })}
+                  return (
+                    <ShapeCard
+                      key={cardIdx}
+                      bgColor={currentSet.bgColors[cardIdx]}
+                      shapeDef={def}
+                      rotation={currentSet.rotations[cardIdx]}
+                      displaceVertex={currentSet.displaceVertex}
+                      state={cardState}
+                      onClick={() => handleCardClick(cardIdx)}
+                      disabled={phase === 'lockout'}
+                      cardIdx={cardIdx}
+                    />
+                  );
+                })}
+              </div>
+
+              {/* Lockout overlay */}
+              {phase === 'lockout' && (
+                <div style={{
+                  position: 'absolute', inset: 0, zIndex: 20,
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                  background: 'rgba(0,0,0,0.72)', borderRadius: 12, gap: 8,
+                  animation: 'lockoutFade 0.15s ease both',
+                }}>
+                  <span style={{ fontSize: '0.65rem', fontWeight: 800, letterSpacing: '0.22em', color: 'rgba(239,68,68,0.7)', textTransform: 'uppercase' }}>
+                    Locked out
+                  </span>
+                  <span style={{
+                    fontSize: '2.8rem', fontWeight: 900, color: '#ef4444',
+                    fontVariantNumeric: 'tabular-nums',
+                    textShadow: '0 0 28px rgba(239,68,68,0.7)',
+                  }}>
+                    {(lockoutMs / 1000).toFixed(1)}s
+                  </span>
+                  {wrongCountInSet.current >= 2 && (
+                    <span style={{ fontSize: '0.6rem', fontWeight: 600, color: 'rgba(255,255,255,0.28)', letterSpacing: '0.08em' }}>
+                      {wrongCountInSet.current === 2 ? '+1.5s next wrong' : '+2s next wrong'}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           </>
         )}
@@ -559,8 +726,8 @@ export default function GameScreen({ config, socket, onResult }: Props) {
         {/* Waiting */}
         {phase === 'waiting' && (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
-            <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#a855f7' }}>
-              {correctCount} / 5 correct
+            <div style={{ fontSize: '1.8rem', fontWeight: 800, color: '#a855f7' }}>
+              {correctCount} correct
             </div>
             <div style={{ fontSize: '0.82rem', color: 'rgba(255,255,255,0.4)', letterSpacing: '0.06em' }}>
               Waiting for opponent to finish…
