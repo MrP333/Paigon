@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { doc, getDoc, setDoc, addDoc, collection, serverTimestamp, increment } from 'firebase/firestore';
+import { doc, getDoc, setDoc, addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from './services/firebase';
+import CalibrationGate from './components/CalibrationGate';
 import HomeScreen from './components/HomeScreen';
 import WaitingScreen from './components/WaitingScreen';
 import GameScreen from './components/GameScreen';
@@ -15,6 +16,9 @@ const SERVER_URL = 'https://mazergame11-production.up.railway.app';
 
 
 export default function App() {
+  const [calibrated, setCalibrated] = useState(
+    () => sessionStorage.getItem('calibrationPassed') === 'true',
+  );
   const [screen, setScreen] = useState<'home' | 'waiting' | 'game' | 'trial' | 'result'>('home');
   const [gameConfig, setGameConfig] = useState<GameConfig | null>(null);
   const [resultData, setResultData] = useState<ResultData | null>(null);
@@ -32,6 +36,7 @@ export default function App() {
   const [points, setPoints]         = useState(0);
   const [winStreak, setWinStreak]   = useState(0);
   const [lossStreak, setLossStreak] = useState(0);
+  const [queueCount, setQueueCount] = useState<{ count: number; min: number; max: number } | undefined>(undefined);
 
 
   const SOLO_DAILY_LIMIT = 5;
@@ -83,14 +88,20 @@ export default function App() {
     const sock = getSocket();
 
     sock.on('reflex:matched', (data: any) => {
+      setQueueCount(undefined);
       setGameConfig(prev => prev ? {
         ...prev,
         roomCode: data.roomCode,
-        opponentName: data.opponentName,
-        opponentColor: data.opponentColor,
+        opponentName: data.opponentName ?? data.opponents?.[0]?.name ?? '',
+        opponentColor: data.opponentColor ?? data.opponents?.[0]?.color ?? '#fb923c',
+        opponents: data.opponents ?? [],
         payoutCents: data.payoutCents || 0,
       } : null);
       setScreen('game');
+    });
+
+    sock.on('queue:count', (data: { count: number; min: number; max: number }) => {
+      setQueueCount(data);
     });
 
     sock.on('balance:update', ({ delta }: { delta: number }) => {
@@ -102,6 +113,7 @@ export default function App() {
     return () => {
       sock.off('reflex:matched');
       sock.off('balance:update');
+      sock.off('queue:count');
     };
   }, []);
 
@@ -175,6 +187,7 @@ export default function App() {
 
   function handleLeave() {
     getSocket().emit('reflex:leave');
+    setQueueCount(undefined);
     setScreen('home');
   }
 
@@ -189,10 +202,7 @@ export default function App() {
 
       const isPaid = gameConfig?.stakeId && !['free', 'practice'].includes(gameConfig.stakeId);
       const pointsEarned = result.won && isPaid ? 20 : 0;
-      if (pointsEarned > 0) {
-        setPoints(p => p + pointsEarned);
-        setDoc(doc(db, 'users', firebaseUser.uid), { points: increment(pointsEarned) }, { merge: true }).catch(console.error);
-      }
+      if (pointsEarned > 0) setPoints(p => p + pointsEarned);
       setDoc(doc(db, 'users', firebaseUser.uid), {
         winStreak: newWin, lossStreak: newLoss,
       }, { merge: true }).catch(console.error);
@@ -227,6 +237,16 @@ export default function App() {
     setScreen('home');
   }
 
+  // Calibration gate — runs once per session before anything else
+  if (!calibrated) {
+    return (
+      <CalibrationGate onComplete={() => {
+        sessionStorage.setItem('calibrationPassed', 'true');
+        setCalibrated(true);
+      }} />
+    );
+  }
+
   // Still loading auth state
   if (firebaseUser === undefined) {
     return (
@@ -256,7 +276,7 @@ export default function App() {
           lossStreak={lossStreak}
         />
       )}
-      {screen === 'waiting' && <WaitingScreen onLeave={handleLeave} />}
+      {screen === 'waiting' && <WaitingScreen onLeave={handleLeave} queueCount={queueCount} />}
       {screen === 'trial' && (
         <TrialScreen
           playerName={resolveName()}
@@ -273,6 +293,7 @@ export default function App() {
           result={resultData}
           onPlayAgain={handlePlayAgain}
           solo={gameConfig?.solo}
+          playerColor={playerColor}
         />
       )}
 

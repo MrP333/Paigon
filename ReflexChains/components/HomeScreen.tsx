@@ -185,6 +185,17 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
         </div>
       ))}
 
+      {/* Back link */}
+      <a href="/" target="_top" style={{
+        position: 'absolute', top: 18, left: 20, zIndex: 2,
+        fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase',
+        color: 'rgba(255,255,255,0.28)', textDecoration: 'none', fontFamily: 'inherit',
+        transition: 'color 0.15s',
+      }}
+        onMouseOver={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.65)')}
+        onMouseOut={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.28)')}
+      >← Paigon</a>
+
       {/* Top bar — account */}
       {isLoggedIn && (
         <div style={{ position: 'absolute', top: 18, right: 20, display: 'flex', alignItems: 'center', gap: 10, zIndex: 2 }}>
@@ -239,39 +250,8 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
             REFLEX<br />CHAINS
           </h1>
           <p style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.4)', letterSpacing: '0.04em' }}>
-            30 seconds &nbsp;·&nbsp; hit as many as you can &nbsp;·&nbsp; highest score wins
+            30 seconds &nbsp;·&nbsp; react fast &nbsp;·&nbsp; build your chain &nbsp;·&nbsp; highest score wins
           </p>
-        </div>
-
-        {/* How to play */}
-        <div style={{
-          borderRadius: 12,
-          background: 'rgba(255,255,255,0.025)',
-          border: '1px solid rgba(255,255,255,0.07)',
-          padding: '10px 12px',
-          display: 'flex', flexDirection: 'column', gap: 6,
-        }}>
-          <div style={{ fontSize: '0.52rem', fontWeight: 800, letterSpacing: '0.24em', color: 'rgba(255,255,255,0.2)', textTransform: 'uppercase', marginBottom: 2 }}>
-            How to play
-          </div>
-          {[
-            { dot: '#22d3ee', label: 'CLICK',  desc: 'Ring shrinks in — click the numbered circle when the ring hits it' },
-            { dot: '#ff4444', label: 'DECOY',  desc: 'Red ✕ is a trap — avoid it or lose time' },
-            { dot: '#ffd700', label: 'STREAK', desc: 'Hit without missing — green → cyan → purple → gold' },
-          ].map(({ dot, label, desc }) => (
-            <div key={label} style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-              <div style={{
-                width: 7, height: 7, borderRadius: '50%', background: dot,
-                flexShrink: 0, marginTop: 4,
-                boxShadow: `0 0 8px ${dot}cc`,
-                animation: 'rc-dot-ping 3s ease-in-out infinite',
-              }} />
-              <div>
-                <span style={{ fontSize: '0.67rem', fontWeight: 800, color: dot, letterSpacing: '0.1em', marginRight: 6 }}>{label}</span>
-                <span style={{ fontSize: '0.67rem', color: 'rgba(255,255,255,0.35)' }}>{desc}</span>
-              </div>
-            </div>
-          ))}
         </div>
 
         {/* Streak banner */}

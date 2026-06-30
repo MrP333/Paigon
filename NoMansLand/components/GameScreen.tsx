@@ -910,7 +910,7 @@ export default function GameScreen({ config, socket, onResult, onPhaseChange }: 
   // Listen for server result in multiplayer
   useEffect(() => {
     if (config.solo) return;
-    const handler = (data: { winnerId: string | null; winnerName: string; draw: boolean; myTimeMs: number | null; opponentTimeMs: number | null; payoutCents?: number; entryCents?: number }) => {
+    const handler = (data: any) => {
       onResult({
         won: data.winnerId !== null && !data.draw && data.myTimeMs !== null && (data.opponentTimeMs === null || data.myTimeMs <= data.opponentTimeMs),
         draw: data.draw,
@@ -919,6 +919,7 @@ export default function GameScreen({ config, socket, onResult, onPhaseChange }: 
         winnerName: data.winnerName,
         payoutCents: data.payoutCents,
         entryCents: data.entryCents,
+        players: data.players ?? undefined,
       });
     };
     socket.on('nml:result', handler);

@@ -33,6 +33,7 @@ export default function App() {
   const [points, setPoints]         = useState(0);
   const [winStreak, setWinStreak] = useState(0);
   const [lossStreak, setLossStreak] = useState(0);
+  const [queueCount, setQueueCount] = useState<{ count: number; min: number; max: number } | undefined>(undefined);
 
 
   const SOLO_DAILY_LIMIT = 5;
@@ -80,16 +81,22 @@ export default function App() {
     const s = io(SERVER_URL, { transports: ['polling', 'websocket'] });
     socketRef.current = s;
 
-    s.on('nml:matched', (data: { roomCode: string; opponentName: string; opponentColor: string; entryCents?: number; payoutCents?: number; towerCount?: number; opponentElo?: number }) => {
+    s.on('nml:matched', (data: any) => {
+      setQueueCount(undefined);
       setConfig(prev => prev ? {
         ...prev,
         roomCode: data.roomCode,
-        opponentName: data.opponentName,
-        opponentColor: data.opponentColor,
+        opponentName: data.opponentName ?? data.opponents?.[0]?.name ?? '',
+        opponentColor: data.opponentColor ?? data.opponents?.[0]?.color ?? '#fb923c',
+        opponents: data.opponents ?? [],
         payoutCents: data.payoutCents ?? 0,
         towerCount: data.towerCount ?? 5,
       } : null);
       setScreen('game');
+    });
+
+    s.on('queue:count', (data: { count: number; min: number; max: number }) => {
+      setQueueCount(data);
     });
 
     s.on('balance:update', ({ delta }: { delta: number }) => {
@@ -227,6 +234,7 @@ export default function App() {
 
   const handleCancel = () => {
     socketRef.current?.emit('nml:leave');
+    setQueueCount(undefined);
     setScreen('home');
   };
 
@@ -287,7 +295,7 @@ export default function App() {
                 background: 'rgba(255,160,32,0.1)', border: '1px solid rgba(255,160,32,0.25)',
                 fontSize: '0.72rem', fontWeight: 700, color: '#ffa020', letterSpacing: '0.06em',
               }}>
-                {tier.label} — {pc(tier.entryCents)} entry · {pc(tier.payoutCents)} to win
+                {tier.label} — {pc(tier.entryCents)} entry · pool grows with players
               </div>
             )}
 
@@ -300,13 +308,26 @@ export default function App() {
             </div>
 
             <div style={{ fontSize: '1.05rem', fontWeight: 700, color: 'rgba(255,255,255,0.55)' }}>
-              Searching for opponent…
+              {queueCount && queueCount.count >= queueCount.min ? 'Lobby Filling…' : 'Finding Players…'}
             </div>
-            <div style={{ display: 'flex', gap: 6 }}>
-              {[0,1,2].map(i => (
-                <div key={i} style={{ width: 7, height: 7, borderRadius: '50%', background: '#ffa020', animation: `pulse 1.2s ${i*0.2}s ease-in-out infinite`, opacity: 0.4 }} />
-              ))}
-            </div>
+            {queueCount ? (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+                <div style={{ fontSize: '0.78rem', color: 'rgba(255,255,255,0.3)' }}>
+                  {queueCount.count} of {queueCount.min}–{queueCount.max} players joined
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {Array.from({ length: queueCount.max }).map((_, i) => (
+                    <div key={i} style={{ width: i < queueCount.count ? 9 : 7, height: i < queueCount.count ? 9 : 7, borderRadius: '50%', background: i < queueCount.count ? '#ffa020' : 'rgba(255,160,32,0.12)', border: i < queueCount.count ? 'none' : '1px solid rgba(255,160,32,0.2)', transition: 'all 0.3s', boxShadow: i < queueCount.count ? '0 0 6px #ffa02080' : 'none' }} />
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', gap: 6 }}>
+                {[0,1,2].map(i => (
+                  <div key={i} style={{ width: 7, height: 7, borderRadius: '50%', background: '#ffa020', animation: `pulse 1.2s ${i*0.2}s ease-in-out infinite`, opacity: 0.4 }} />
+                ))}
+              </div>
+            )}
 
             {/* Controls reminder */}
             <div style={{ marginTop: 8, display: 'flex', gap: 20, opacity: 0.22 }}>

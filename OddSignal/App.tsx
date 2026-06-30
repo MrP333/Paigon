@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { doc, getDoc, setDoc, addDoc, collection, serverTimestamp, increment } from 'firebase/firestore';
+import { doc, getDoc, setDoc, addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from './services/firebase';
+import CalibrationGate from './components/CalibrationGate';
 import HomeScreen from './components/HomeScreen';
 import WaitingScreen from './components/WaitingScreen';
 import GameScreen from './components/GameScreen';
@@ -15,6 +16,9 @@ const SERVER_URL = 'https://mazergame11-production.up.railway.app';
 const SOLO_DAILY_LIMIT = 5;
 
 export default function App() {
+  const [calibrated, setCalibrated] = useState(
+    () => sessionStorage.getItem('oddCalibrationPassed') === 'true',
+  );
   const [screen, setScreen] = useState<'home' | 'waiting' | 'game' | 'trial' | 'result'>('home');
   const [gameConfig, setGameConfig] = useState<GameConfig | null>(null);
   const [resultData, setResultData] = useState<ResultData | null>(null);
@@ -31,6 +35,7 @@ export default function App() {
   const [points, setPoints]         = useState(0);
   const [winStreak, setWinStreak]   = useState(0);
   const [lossStreak, setLossStreak] = useState(0);
+  const [queueCount, setQueueCount] = useState<{ count: number; min: number; max: number } | undefined>(undefined);
 
   useEffect(() => {
     return onAuthStateChanged(auth, async (user) => {
@@ -75,14 +80,25 @@ export default function App() {
   useEffect(() => {
     const sock = getSocket();
     sock.on('odd:matched', (data: any) => {
-      setGameConfig(prev => prev ? { ...prev, roomCode: data.roomCode, opponentName: data.opponentName, opponentColor: data.opponentColor, payoutCents: data.payoutCents || 0 } : null);
+      setQueueCount(undefined);
+      setGameConfig(prev => prev ? {
+        ...prev,
+        roomCode: data.roomCode,
+        opponentName: data.opponentName ?? data.opponents?.[0]?.name ?? '',
+        opponentColor: data.opponentColor ?? data.opponents?.[0]?.color ?? '#a855f7',
+        opponents: data.opponents ?? [],
+        payoutCents: data.payoutCents || 0,
+      } : null);
       setScreen('game');
+    });
+    sock.on('queue:count', (data: { count: number; min: number; max: number }) => {
+      setQueueCount(data);
     });
     sock.on('balance:update', ({ delta }: { delta: number }) => {
       setBalance(b => b + delta);
     });
     sock.on('connect_error', () => console.warn('[odd-signal] socket connect error'));
-    return () => { sock.off('odd:matched'); sock.off('balance:update'); };
+    return () => { sock.off('odd:matched'); sock.off('balance:update'); sock.off('queue:count'); };
   }, []);
 
   function resolveName() {
@@ -131,6 +147,7 @@ export default function App() {
 
   function handleLeave() {
     getSocket().emit('odd:leave');
+    setQueueCount(undefined);
     setScreen('home');
   }
 
@@ -144,10 +161,7 @@ export default function App() {
 
       const isPaid = gameConfig?.stakeId && !['free', 'practice'].includes(gameConfig.stakeId);
       const pointsEarned = result.won && isPaid ? 20 : 0;
-      if (pointsEarned > 0) {
-        setPoints(p => p + pointsEarned);
-        setDoc(doc(db, 'users', firebaseUser.uid), { points: increment(pointsEarned) }, { merge: true }).catch(console.error);
-      }
+      if (pointsEarned > 0) setPoints(p => p + pointsEarned);
       setDoc(doc(db, 'users', firebaseUser.uid), { winStreakOdd: newWin, lossStreakOdd: newLoss }, { merge: true }).catch(console.error);
 
       addDoc(collection(db, 'users', firebaseUser.uid, 'matches'), {
@@ -180,6 +194,15 @@ export default function App() {
     setScreen('home');
   }
 
+  if (!calibrated) {
+    return (
+      <CalibrationGate onComplete={() => {
+        sessionStorage.setItem('oddCalibrationPassed', 'true');
+        setCalibrated(true);
+      }} />
+    );
+  }
+
   if (firebaseUser === undefined) {
     return (
       <div style={{ width: '100vw', height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#03030a' }}>
@@ -208,7 +231,7 @@ export default function App() {
           lossStreak={lossStreak}
         />
       )}
-      {screen === 'waiting' && <WaitingScreen onLeave={handleLeave} />}
+      {screen === 'waiting' && <WaitingScreen onLeave={handleLeave} queueCount={queueCount} />}
       {screen === 'trial' && (
         <TrialScreen playerName={resolveName()} playerColor={playerColor} onComplete={handleTrialComplete} onBack={() => setScreen('home')} />
       )}

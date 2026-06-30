@@ -246,9 +246,14 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
 
       {/* Top bar */}
       <div style={{ position: 'absolute', top: 20, left: 0, right: 0, display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 24px', zIndex: 2 }}>
-        <div style={{ fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.28em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.18)' }}>
-          Paigon · NML
-        </div>
+        <a href="/" target="_top" style={{
+          fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.18em', textTransform: 'uppercase',
+          color: 'rgba(255,255,255,0.28)', textDecoration: 'none', fontFamily: 'inherit',
+          transition: 'color 0.15s',
+        }}
+          onMouseOver={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.65)')}
+          onMouseOut={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.28)')}
+        >← Paigon</a>
         {isLoggedIn && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <a href="/account.html" style={{

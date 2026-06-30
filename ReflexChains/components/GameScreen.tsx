@@ -9,10 +9,10 @@ const NUM_TARGETS      = 150;
 const GAME_DURATION_MS = 30000;
 const TARGET_R         = 32;
 const CHARGE_MS        = 100;
-const MIN_RING_MS      = 850;
-const MAX_RING_MS      = 1650;
-const SLOT_COUNT       = 4;
-const DECOY_RATE       = 0.28;
+const START_RING_MS    = 1500; // slow at game start
+const END_RING_MS      = 800;  // fast by game end
+const SLOT_COUNT       = 2;
+const DECOY_RATE       = 0.15;
 const HIT_TOLERANCE    = TARGET_R + 16;
 const GHOST_DUR        = 1800;
 
@@ -57,6 +57,7 @@ interface ActiveSlot {
   appearTime:    number;
   timeoutId:     ReturnType<typeof setTimeout>;
   displayNumber: number; // sequential index for real targets; 0 for decoys
+  ringMs:        number; // ring close duration, computed from game progress at spawn time
 }
 
 function initParticles(): Particle[] {
@@ -105,9 +106,9 @@ function generateTargets(roomCode: string): Target[] {
       y = PAD + rng() * (CH - PAD * 2);
       tries++;
     } while (tries < 60 && targets.some(t => Math.hypot(t.x - x, t.y - y) < 120));
-    const ringMs  = MIN_RING_MS + rng() * (MAX_RING_MS - MIN_RING_MS);
+    rng(); // consumed to keep isDecoy seed position stable
     const isDecoy = rng() < DECOY_RATE;
-    targets.push({ x, y, index: i, ringMs, isDecoy });
+    targets.push({ x, y, index: i, ringMs: 0, isDecoy }); // ringMs set per-slot at spawn time
   }
   return targets;
 }
@@ -167,8 +168,9 @@ function drawTarget(
   color:        string,
   hitNumber:    number,
   isDecoy:      boolean,
+  ringMs:       number,
 ) {
-  const { x, y, ringMs } = t;
+  const { x, y } = t;
   const TOTAL          = CHARGE_MS + ringMs;
   const approachProg   = Math.min(elapsed / TOTAL, 1);
   const easedProg      = approachProg * approachProg;
@@ -421,11 +423,16 @@ export default function GameScreen({ config, socket, onResult }: Props) {
   function createSlot(poolIdx: number, now: number): ActiveSlot {
     const t             = targets[poolIdx];
     const displayNumber = t.isDecoy ? 0 : ++realSlotCounterRef.current;
+    // Ring speed ramps up linearly from START_RING_MS → END_RING_MS over the 30s game
+    const gameProgress  = startTimeRef.current > 0
+      ? Math.min(1, (now - startTimeRef.current) / GAME_DURATION_MS)
+      : 0;
+    const ringMs        = Math.round(START_RING_MS - (START_RING_MS - END_RING_MS) * gameProgress);
     const timeoutId     = setTimeout(
       () => handleSlotTimeoutRef.current(poolIdx),
-      CHARGE_MS + t.ringMs,
+      CHARGE_MS + ringMs,
     );
-    return { poolIdx, appearTime: now, timeoutId, displayNumber };
+    return { poolIdx, appearTime: now, timeoutId, displayNumber, ringMs };
   }
 
   function addNextSlot(now: number) {
@@ -589,7 +596,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
     multiplierRef.current = mult;
     if (mult !== prevMult) setMultiplier(mult);
 
-    const rawPts = calcPoints(elapsed - CHARGE_MS, t.ringMs);
+    const rawPts = calcPoints(elapsed - CHARGE_MS, bestSlot.ringMs);
     const pts    = Math.round(rawPts * mult);
     hitCountRef.current++;
     scoreRef.current += pts;
@@ -658,6 +665,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
             getTargetColor(slot.poolIdx),
             slot.displayNumber,
             t.isDecoy,
+            slot.ringMs,
           );
         }
       }

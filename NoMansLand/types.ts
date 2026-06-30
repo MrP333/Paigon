@@ -96,12 +96,24 @@ export interface InputCommands {
   sprint: boolean;
 }
 
+export interface Opponent { name: string; color: string; }
+
+export interface PlayerResult {
+  rank: number;
+  name: string;
+  color: string;
+  timeMs: number | null;
+  crossed: boolean;
+  won: boolean;
+}
+
 export interface GameConfig {
   roomCode: string;
   playerName: string;
   playerColor: string;
   opponentName: string;
   opponentColor: string;
+  opponents?: Opponent[];
   stakeId: string;
   payoutCents: number;
   solo?: boolean;
@@ -116,4 +128,5 @@ export interface ResultData {
   winnerName: string;
   payoutCents?: number;
   entryCents?: number;
+  players?: PlayerResult[];
 }

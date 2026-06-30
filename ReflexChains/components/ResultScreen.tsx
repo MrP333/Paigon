@@ -39,6 +39,7 @@ interface Props {
   result: ResultData;
   onPlayAgain: () => void;
   solo?: boolean;
+  playerColor?: string;
 }
 
 const NUM_TARGETS_DISPLAY = 10; // dots indicator (first 10 hits)
@@ -89,7 +90,7 @@ function useCountUp(target: number | null, delay = 400) {
   useEffect(() => {
     if (target === null) return;
     const t = setTimeout(() => {
-      const dur = 900;
+      const dur = 1500;
       const start = performance.now();
       function tick() {
         const p = Math.min((performance.now() - start) / dur, 1);
@@ -122,7 +123,7 @@ function StatRow({ label, value, highlight, delay = 0 }: { label: string; value:
   );
 }
 
-export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
+export default function ResultScreen({ result, onPlayAgain, solo, playerColor }: Props) {
   const { won, myTimeMs, myScore, myHits, opponentTimeMs, opponentScore, opponentHits, winnerName } = result;
 
   useEffect(() => {
@@ -148,7 +149,7 @@ export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
         background: 'radial-gradient(ellipse 85% 65% at 50% 38%, rgba(34,211,238,0.08) 0%, transparent 70%), #03030a',
         position: 'relative', overflow: 'hidden',
       }}>
-        <Particles c1="#22d3ee" c2="#00ff88" n={24} />
+        <Particles c1={playerColor ?? '#22d3ee'} c2="#00ff88" n={24} />
 
         <div style={{
           position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0,
@@ -223,9 +224,10 @@ export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
   }
 
   // ── Multiplayer ───────────────────────────────────────────────────────────────
-  const myRow  = { label: 'You',                        score: myScore,       hits: myHits,       timeMs: myTimeMs,       winner: won  };
-  const oppRow = { label: winnerName || 'Opponent',     score: opponentScore, hits: opponentHits, timeMs: opponentTimeMs, winner: !won };
-  const rows   = won ? [myRow, oppRow] : [oppRow, myRow];
+  const players = result.players;
+
+  // Identify "me" by matching my score + hits
+  const myRank = players?.find(p => p.score === myScore && p.hits === myHits)?.rank ?? (won ? 1 : 2);
 
   return (
     <div style={{
@@ -234,7 +236,7 @@ export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
       background: `radial-gradient(ellipse 85% 65% at 50% 38%, ${won ? 'rgba(0,255,136,0.08)' : 'rgba(255,107,107,0.07)'} 0%, transparent 70%), #03030a`,
       position: 'relative', overflow: 'hidden',
     }}>
-      <Particles c1={accent} c2={won ? '#22d3ee' : '#fb923c'} n={won ? 30 : 18} />
+      <Particles c1={won ? (playerColor ?? '#00ff88') : '#ff6b6b'} c2={won ? '#22d3ee' : '#fb923c'} n={won ? 30 : 18} />
 
       <div style={{
         position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0,
@@ -243,11 +245,12 @@ export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
 
       <div style={{
         position: 'relative', zIndex: 1,
-        width: '100%', maxWidth: 460, padding: '44px 40px', margin: '0 16px',
+        width: '100%', maxWidth: 460, padding: '40px 36px', margin: '0 16px',
         background: 'rgba(255,255,255,0.025)', border: `1px solid ${borderCol}`,
-        borderRadius: 20, display: 'flex', flexDirection: 'column', gap: 26, textAlign: 'center',
+        borderRadius: 20, display: 'flex', flexDirection: 'column', gap: 22, textAlign: 'center',
         boxShadow: `0 0 80px ${won ? 'rgba(0,255,136,0.08)' : 'rgba(255,107,107,0.06)'}`,
         animation: 'paigon-card-in 0.55s cubic-bezier(0.34,1.56,0.64,1) both',
+        maxHeight: '90vh', overflowY: 'auto',
       }}>
 
         {/* Banner */}
@@ -258,10 +261,10 @@ export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
             textTransform: 'uppercase', marginBottom: 10,
             animation: 'paigon-stat 0.35s 0.2s both',
           }}>
-            {won ? 'Victory' : 'Defeated'}
+            {won ? 'Victory' : `Rank #${myRank}`}
           </div>
           <div style={{
-            fontSize: '3rem', fontWeight: 900, lineHeight: 1, letterSpacing: '-0.03em',
+            fontSize: '2.8rem', fontWeight: 900, lineHeight: 1, letterSpacing: '-0.03em',
             background: won
               ? 'linear-gradient(135deg, #00ff88 0%, #22d3ee 100%)'
               : 'linear-gradient(135deg, #ff6b6b 0%, #fb923c 100%)',
@@ -270,51 +273,72 @@ export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
           }}>
             {won ? 'YOU WIN' : 'YOU LOSE'}
           </div>
-          <div style={{ fontSize: '0.78rem', color: 'rgba(255,255,255,0.25)', marginTop: 8, letterSpacing: '0.04em', animation: 'paigon-stat 0.35s 0.4s both' }}>
-            {won ? 'Your score was higher' : `${winnerName} scored higher`}
+          <div style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.25)', marginTop: 8, letterSpacing: '0.04em', animation: 'paigon-stat 0.35s 0.4s both' }}>
+            {won ? 'Your score was highest' : `${winnerName} scored highest`}
           </div>
         </div>
 
-        {/* Score cards */}
-        <div style={{ display: 'flex', gap: 10 }}>
-          {rows.map((r, i) => (
-            <div key={i} style={{
-              flex: 1, padding: '18px 14px', borderRadius: 14, textAlign: 'center',
-              background: r.winner ? accentDim : 'rgba(255,255,255,0.02)',
-              border: `1px solid ${r.winner ? borderCol : 'rgba(255,255,255,0.06)'}`,
-              boxShadow: r.winner ? `0 0 24px ${accent}18` : 'none',
-              animation: `paigon-stat 0.4s ${0.45 + i * 0.1}s both`,
-            }}>
-              <div style={{ fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.3)', marginBottom: 6 }}>
-                {r.label}
-              </div>
-              <div style={{
-                fontSize: '2.1rem', fontWeight: 900, letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums', lineHeight: 1,
-                color: r.winner ? accent : 'rgba(255,255,255,0.55)',
-                textShadow: r.winner ? `0 0 30px ${accent}88` : 'none',
-              }}>
-                {fmtScore(r.score)}
-              </div>
-              <div style={{ fontSize: '0.6rem', fontWeight: 600, color: 'rgba(255,255,255,0.2)', letterSpacing: '0.06em', marginTop: 3, marginBottom: 12 }}>pts</div>
-              {/* Hits dots */}
-              <div style={{ display: 'flex', justifyContent: 'center', gap: 3, marginBottom: 8 }}>
-                {Array.from({ length: NUM_TARGETS_DISPLAY }, (_, j) => (
-                  <div key={j} style={{
-                    width: 6, height: 6, borderRadius: 2,
-                    background: j < (r.hits ?? 0) ? (r.winner ? accent : 'rgba(255,255,255,0.4)') : 'rgba(255,255,255,0.07)',
-                    animation: j < (r.hits ?? 0) ? `paigon-dot-pop 0.3s ${0.6 + j * 0.05}s both` : undefined,
-                  }} />
-                ))}
-              </div>
-              <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'rgba(255,255,255,0.3)', fontVariantNumeric: 'tabular-nums' }}>
-                {r.hits ?? '?'} hits · {r.hits && r.score ? `${Math.round(r.score / r.hits)} avg` : '—'}
-              </div>
+        {/* Leaderboard (N-player) or 2-col (fallback) */}
+        {players && players.length > 0 ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, animation: 'paigon-stat 0.35s 0.45s both' }}>
+            <div style={{ fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.2)', marginBottom: 4 }}>
+              Final Standings
             </div>
-          ))}
-        </div>
+            {players.map((p, i) => {
+              const isMe = p.score === myScore && p.hits === myHits;
+              const isWinner = p.won;
+              const rowAccent = isWinner ? '#00ff88' : isMe ? '#22d3ee' : null;
+              return (
+                <div key={i} style={{
+                  display: 'flex', alignItems: 'center', gap: 12,
+                  padding: '10px 14px', borderRadius: 12,
+                  background: isWinner ? 'rgba(0,255,136,0.06)' : isMe ? 'rgba(34,211,238,0.05)' : 'rgba(255,255,255,0.025)',
+                  border: `1px solid ${rowAccent ? rowAccent + '30' : 'rgba(255,255,255,0.06)'}`,
+                  animation: `paigon-stat 0.35s ${0.5 + i * 0.07}s both`,
+                }}>
+                  <span style={{ fontSize: '0.75rem', fontWeight: 800, fontFamily: 'monospace', color: rowAccent ?? 'rgba(255,255,255,0.25)', width: 18, flexShrink: 0, textAlign: 'center' }}>
+                    #{p.rank}
+                  </span>
+                  <div style={{ width: 8, height: 8, borderRadius: '50%', background: p.color, flexShrink: 0 }} />
+                  <span style={{ flex: 1, textAlign: 'left', fontSize: '0.82rem', fontWeight: 700, color: rowAccent ?? 'rgba(255,255,255,0.6)' }}>
+                    {p.name}{isMe ? ' (you)' : ''}
+                  </span>
+                  <span style={{ fontSize: '0.78rem', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: rowAccent ?? 'rgba(255,255,255,0.4)' }}>
+                    {p.score.toLocaleString()}
+                  </span>
+                  <span style={{ fontSize: '0.65rem', color: 'rgba(255,255,255,0.2)', fontVariantNumeric: 'tabular-nums', width: 42, textAlign: 'right' }}>
+                    {p.hits}h · {fmtTime(p.timeMs)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          // Fallback 2-column for legacy / solo
+          <div style={{ display: 'flex', gap: 10 }}>
+            {(won ? [
+              { label: 'You', score: myScore, hits: myHits, timeMs: myTimeMs, winner: true },
+              { label: winnerName || 'Opponent', score: opponentScore, hits: opponentHits, timeMs: opponentTimeMs, winner: false },
+            ] : [
+              { label: winnerName || 'Opponent', score: opponentScore, hits: opponentHits, timeMs: opponentTimeMs, winner: true },
+              { label: 'You', score: myScore, hits: myHits, timeMs: myTimeMs, winner: false },
+            ]).map((r, i) => (
+              <div key={i} style={{
+                flex: 1, padding: '18px 14px', borderRadius: 14, textAlign: 'center',
+                background: r.winner ? accentDim : 'rgba(255,255,255,0.02)',
+                border: `1px solid ${r.winner ? borderCol : 'rgba(255,255,255,0.06)'}`,
+                animation: `paigon-stat 0.4s ${0.45 + i * 0.1}s both`,
+              }}>
+                <div style={{ fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.3)', marginBottom: 6 }}>{r.label}</div>
+                <div style={{ fontSize: '2.1rem', fontWeight: 900, color: r.winner ? accent : 'rgba(255,255,255,0.55)' }}>{fmtScore(r.score)}</div>
+                <div style={{ fontSize: '0.65rem', color: 'rgba(255,255,255,0.25)', marginTop: 4 }}>{r.hits ?? '?'} hits · {fmtTime(r.timeMs)}</div>
+              </div>
+            ))}
+          </div>
+        )}
 
-        <div style={{ fontSize: '0.62rem', color: 'rgba(255,255,255,0.15)', letterSpacing: '0.06em', marginTop: -8, animation: 'paigon-stat 0.35s 0.7s both' }}>
-          10–100 pts per hit · faster reaction = higher score
+        <div style={{ fontSize: '0.62rem', color: 'rgba(255,255,255,0.15)', letterSpacing: '0.06em', marginTop: -6, animation: 'paigon-stat 0.35s 0.7s both' }}>
+          Ranked by score · faster reaction = higher score
         </div>
 
         <button

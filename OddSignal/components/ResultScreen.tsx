@@ -1,5 +1,5 @@
 import { ResultData } from '../types';
-import { useEffect, useMemo, useState, CSSProperties } from 'react';
+import { useEffect, useMemo, useState, useRef, CSSProperties } from 'react';
 
 const CSS = `
 @keyframes paigon-card-in {
@@ -33,6 +33,10 @@ const CSS = `
   70%  { opacity:1; transform:scale(1.08); }
   100% { opacity:1; transform:scale(1); }
 }
+@keyframes paigon-tick-flash {
+  0%   { transform:scale(1.45); color:#00ff88; text-shadow:0 0 24px rgba(0,255,136,0.9); }
+  100% { transform:scale(1);    color:inherit;  text-shadow:none; }
+}
 `;
 
 interface Props {
@@ -41,8 +45,14 @@ interface Props {
   solo?: boolean;
 }
 
-function fmtMs(ms: number) {
-  return (ms / 1000).toFixed(2) + 's';
+function fmtMs(ms: number) { return (ms / 1000).toFixed(2) + 's'; }
+function fmtAvg(totalMs: number, correct: number) {
+  if (correct === 0) return '—';
+  return Math.round(totalMs / correct) + 'ms';
+}
+function fmtAccuracy(correct: number, attempted: number) {
+  if (attempted === 0) return '—';
+  return Math.round((correct / attempted) * 100) + '%';
 }
 
 interface PInfo { px: string; py: string; pr: string; w: number; h: number; color: string; delay: number; dur: number; br: string; }
@@ -77,14 +87,14 @@ function Particles({ c1, c2, n = 28 }: { c1: string; c2: string; n?: number }) {
   );
 }
 
-function useCountUp(target: number, delay = 500) {
+// Smoothly counts a number from 0 to target over `duration` ms after `delay` ms
+function useCountUp(target: number, delay = 500, duration = 1500) {
   const [val, setVal] = useState(0);
   useEffect(() => {
     const t = setTimeout(() => {
-      const dur = 900;
       const start = performance.now();
       function tick() {
-        const p = Math.min((performance.now() - start) / dur, 1);
+        const p = Math.min((performance.now() - start) / duration, 1);
         const eased = 1 - Math.pow(1 - p, 3);
         setVal(Math.floor(eased * target));
         if (p < 1) requestAnimationFrame(tick);
@@ -97,9 +107,34 @@ function useCountUp(target: number, delay = 500) {
   return val;
 }
 
+// Ticks an integer from 0 to target, one per stepMs, after initialDelay
+function useTickUp(target: number, stepMs = 260, initialDelay = 500) {
+  const [val, setVal] = useState(0);
+  const [flashKey, setFlashKey] = useState(0);
+  const timeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  useEffect(() => {
+    timeoutsRef.current.forEach(clearTimeout);
+    timeoutsRef.current = [];
+    setVal(0);
+    setFlashKey(0);
+    if (target === 0) return;
+    for (let i = 1; i <= target; i++) {
+      const t = setTimeout(() => {
+        setVal(i);
+        setFlashKey(k => k + 1);
+      }, initialDelay + (i - 1) * stepMs);
+      timeoutsRef.current.push(t);
+    }
+    return () => timeoutsRef.current.forEach(clearTimeout);
+  }, [target]);
+
+  return { val, flashKey };
+}
+
 export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
-  const won = result.won;
-  const accent = won ? '#a855f7' : '#ef4444';
+  const won       = result.won;
+  const accent    = won ? '#a855f7' : '#ef4444';
   const accentAlt = won ? '#ec4899' : '#f97316';
 
   useEffect(() => {
@@ -110,7 +145,9 @@ export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
     document.head.appendChild(el);
   }, []);
 
-  const animatedScore = useCountUp(result.myScore, 600);
+  const animatedScore   = useCountUp(result.myScore, 600, 1500);
+  const { val: animCorrect, flashKey: correctFlash } = useTickUp(result.myCorrect, 260, 550);
+  const myAttempted     = result.myAttempted ?? result.myCorrect;
 
   const bgGlow = won
     ? 'radial-gradient(ellipse 85% 65% at 50% 38%, rgba(168,85,247,0.1) 0%, transparent 70%), #03030a'
@@ -167,61 +204,105 @@ export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
           )}
         </div>
 
-        {/* Round breakdown */}
-        <div>
-          <div style={{
-            fontSize: '0.52rem', fontWeight: 800, letterSpacing: '0.22em',
-            color: 'rgba(255,255,255,0.2)', textTransform: 'uppercase', marginBottom: 10,
-            animation: 'paigon-stat 0.35s 0.45s both',
-          }}>
-            Round breakdown
-          </div>
-          <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
-            {result.roundResults.map((r, i) => (
-              <div key={i} style={{
-                flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
-                padding: '9px 4px', borderRadius: 10,
-                background: r.correct ? 'rgba(168,85,247,0.1)' : 'rgba(239,68,68,0.08)',
-                border: `1px solid ${r.correct ? 'rgba(168,85,247,0.28)' : 'rgba(239,68,68,0.2)'}`,
-                boxShadow: r.correct ? '0 0 12px rgba(168,85,247,0.15)' : 'none',
-                animation: `paigon-round-pop 0.4s ${0.5 + i * 0.08}s cubic-bezier(0.34,1.56,0.64,1) both`,
-              }}>
-                <span style={{ fontSize: '0.52rem', fontWeight: 700, color: 'rgba(255,255,255,0.3)', letterSpacing: '0.1em' }}>R{i + 1}</span>
-                <span style={{ fontSize: '0.85rem', fontWeight: 900, color: r.correct ? '#a855f7' : '#ff6b6b' }}>
-                  {r.correct ? '✓' : '✗'}
-                </span>
-                <span style={{ fontSize: '0.58rem', fontWeight: 600, color: 'rgba(255,255,255,0.35)', fontVariantNumeric: 'tabular-nums' }}>
-                  {fmtMs(r.reactionMs)}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Stats */}
+        {/* Blitz stats */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 0, borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: 16 }}>
           {[
-            { label: 'Correct',    value: `${result.myCorrect} / 5`,              highlight: false, d: 0.85 },
-            { label: 'Total time', value: fmtMs(result.myTotalMs),                highlight: false, d: 0.9  },
-            { label: 'Your score', value: animatedScore.toLocaleString(),          highlight: true,  d: 0.95 },
-            ...(!solo && result.opponentScore !== null
-              ? [{ label: 'Opp. score', value: result.opponentScore!.toLocaleString(), highlight: false, d: 1.0 }]
+            {
+              label: 'Correct',
+              renderValue: () => (
+                <span key={correctFlash} style={{
+                  fontSize: '0.85rem', fontWeight: 800, fontVariantNumeric: 'tabular-nums',
+                  color: 'rgba(255,255,255,0.75)', display: 'inline-block',
+                  animation: correctFlash > 0 ? 'paigon-tick-flash 0.28s ease-out both' : 'none',
+                }}>
+                  {animCorrect} / {myAttempted}
+                </span>
+              ),
+              d: 0.75,
+            },
+            {
+              label: 'Accuracy',
+              renderValue: () => (
+                <span style={{ fontSize: '0.85rem', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: 'rgba(255,255,255,0.75)' }}>
+                  {fmtAccuracy(result.myCorrect, myAttempted)}
+                </span>
+              ),
+              d: 0.82,
+            },
+            {
+              label: 'Avg reaction',
+              renderValue: () => (
+                <span style={{ fontSize: '0.85rem', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: 'rgba(255,255,255,0.75)' }}>
+                  {fmtAvg(result.myTotalMs, result.myCorrect)}
+                </span>
+              ),
+              d: 0.89,
+            },
+            {
+              label: 'Score',
+              renderValue: () => (
+                <span style={{
+                  fontSize: '0.85rem', fontWeight: 800, fontVariantNumeric: 'tabular-nums',
+                  color: accent, textShadow: `0 0 20px ${accent}88`,
+                }}>
+                  {animatedScore.toLocaleString()}
+                </span>
+              ),
+              d: 0.96,
+            },
+            ...(!solo && !result.players && result.opponentScore !== null
+              ? [{
+                  label: 'Opp. score',
+                  renderValue: () => <span style={{ fontSize: '0.85rem', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: 'rgba(255,255,255,0.75)' }}>{result.opponentScore!.toLocaleString()}</span>,
+                  d: 1.03,
+                }]
               : []),
-          ].map(({ label, value, highlight, d }) => (
+          ].map(({ label, renderValue, d }) => (
             <div key={label} style={{
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               padding: '7px 0', borderBottom: '1px solid rgba(255,255,255,0.05)',
               animation: `paigon-stat 0.35s ${d}s both`,
             }}>
               <span style={{ fontSize: '0.68rem', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.3)' }}>{label}</span>
-              <span style={{
-                fontSize: '0.85rem', fontWeight: 800, fontVariantNumeric: 'tabular-nums',
-                color: highlight ? accent : 'rgba(255,255,255,0.75)',
-                textShadow: highlight ? `0 0 20px ${accent}88` : 'none',
-              }}>{value}</span>
+              {renderValue()}
             </div>
           ))}
         </div>
+
+        {/* Leaderboard (N-player) */}
+        {!solo && result.players && result.players.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, animation: 'paigon-stat 0.35s 1.0s both' }}>
+            <div style={{ fontSize: '0.52rem', fontWeight: 800, letterSpacing: '0.22em', color: 'rgba(255,255,255,0.2)', textTransform: 'uppercase', marginBottom: 4 }}>
+              Final Standings
+            </div>
+            {result.players.map((p, i) => {
+              const isMe = p.score === result.myScore && p.correct === result.myCorrect;
+              return (
+                <div key={i} style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '9px 12px', borderRadius: 10,
+                  background: p.won ? `${accent}0d` : isMe ? 'rgba(168,85,247,0.05)' : 'rgba(255,255,255,0.02)',
+                  border: `1px solid ${p.won ? accent + '33' : isMe ? accent + '20' : 'rgba(255,255,255,0.06)'}`,
+                  animation: `paigon-stat 0.35s ${1.05 + i * 0.07}s both`,
+                }}>
+                  <span style={{ fontSize: '0.72rem', fontWeight: 800, fontFamily: 'monospace', color: p.won ? accent : 'rgba(255,255,255,0.25)', width: 18, textAlign: 'center' }}>
+                    #{p.rank}
+                  </span>
+                  <div style={{ width: 7, height: 7, borderRadius: '50%', background: p.color, flexShrink: 0 }} />
+                  <span style={{ flex: 1, textAlign: 'left', fontSize: '0.8rem', fontWeight: 700, color: p.won ? accent : isMe ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.45)' }}>
+                    {p.name}{isMe ? ' (you)' : ''}
+                  </span>
+                  <span style={{ fontSize: '0.65rem', color: 'rgba(255,255,255,0.3)', fontVariantNumeric: 'tabular-nums' }}>
+                    {p.correct}/{p.attempted ?? p.correct} · {fmtAvg(p.timeMs, p.correct)}
+                  </span>
+                  <span style={{ fontSize: '0.75rem', fontWeight: 800, color: p.won ? accent : 'rgba(255,255,255,0.35)', fontVariantNumeric: 'tabular-nums', minWidth: 44, textAlign: 'right' }}>
+                    {p.score.toLocaleString()}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         <button
           onClick={onPlayAgain}

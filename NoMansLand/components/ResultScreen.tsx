@@ -244,58 +244,97 @@ export default function ResultScreen({ result, playerName, solo, stakeId, onPlay
           </div>
         )}
 
-        {/* Time cards */}
-        <div style={{ display: 'flex', gap: 10, marginBottom: 28, width: '100%', justifyContent: 'center', animation: 'paigon-stat 0.4s 0.5s both' }}>
-          <div style={{
-            flex: 1, maxWidth: 180,
-            background: won || (solo && myTimeMs !== null) ? `${hc}0d` : 'rgba(255,255,255,0.03)',
-            border: `1px solid ${won || (solo && myTimeMs !== null) ? hc + '40' : 'rgba(255,255,255,0.07)'}`,
-            borderRadius: 14, padding: '16px 20px', textAlign: 'center',
-            boxShadow: won || (solo && myTimeMs !== null) ? `0 0 28px ${hc}18` : 'none',
-          }}>
-            <div style={{ fontSize: '0.58rem', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.25)', marginBottom: 10 }}>
-              {solo ? 'Your Time' : playerName}
-            </div>
-            <div style={{
-              fontSize: '2rem', fontWeight: 900, letterSpacing: '-0.03em', fontVariantNumeric: 'tabular-nums', lineHeight: 1,
-              color: myTimeMs !== null ? (won || solo ? hc : 'rgba(255,255,255,0.7)') : '#ff4444',
-              textShadow: myTimeMs !== null && (won || solo) ? `0 0 24px ${hc}88` : 'none',
-            }}>
-              {myTimeMs !== null ? fmt(animatedMyTime) : 'KIA'}
-            </div>
-            {myTimeMs !== null && (won || solo) && (
-              <div style={{ fontSize: '0.58rem', color: hc, fontWeight: 700, marginTop: 6, letterSpacing: '0.08em', opacity: 0.7 }}>
-                ★ FASTEST
-              </div>
-            )}
-          </div>
-
-          {!solo && (
+        {/* Time cards — legacy 2-player layout */}
+        {!result.players && (
+          <div style={{ display: 'flex', gap: 10, marginBottom: 28, width: '100%', justifyContent: 'center', animation: 'paigon-stat 0.4s 0.5s both' }}>
             <div style={{
               flex: 1, maxWidth: 180,
-              background: !won && !draw ? `rgba(0,255,136,0.06)` : 'rgba(255,255,255,0.025)',
-              border: `1px solid ${!won && !draw ? 'rgba(0,255,136,0.25)' : 'rgba(255,255,255,0.06)'}`,
+              background: won || (solo && myTimeMs !== null) ? `${hc}0d` : 'rgba(255,255,255,0.03)',
+              border: `1px solid ${won || (solo && myTimeMs !== null) ? hc + '40' : 'rgba(255,255,255,0.07)'}`,
               borderRadius: 14, padding: '16px 20px', textAlign: 'center',
-              boxShadow: !won && !draw ? '0 0 24px rgba(0,255,136,0.1)' : 'none',
+              boxShadow: won || (solo && myTimeMs !== null) ? `0 0 28px ${hc}18` : 'none',
             }}>
               <div style={{ fontSize: '0.58rem', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.25)', marginBottom: 10 }}>
-                {winnerName || 'Opponent'}
+                {solo ? 'Your Time' : playerName}
               </div>
               <div style={{
                 fontSize: '2rem', fontWeight: 900, letterSpacing: '-0.03em', fontVariantNumeric: 'tabular-nums', lineHeight: 1,
-                color: opponentTimeMs !== null ? (!won && !draw ? '#00ff88' : 'rgba(255,255,255,0.5)') : 'rgba(255,255,255,0.3)',
-                textShadow: !won && !draw && opponentTimeMs !== null ? '0 0 24px rgba(0,255,136,0.7)' : 'none',
+                color: myTimeMs !== null ? (won || solo ? hc : 'rgba(255,255,255,0.7)') : '#ff4444',
+                textShadow: myTimeMs !== null && (won || solo) ? `0 0 24px ${hc}88` : 'none',
               }}>
-                {opponentTimeMs !== null ? fmt(animatedOppTime) : 'KIA'}
+                {myTimeMs !== null ? fmt(animatedMyTime) : 'KIA'}
               </div>
-              {!won && !draw && opponentTimeMs !== null && (
-                <div style={{ fontSize: '0.58rem', color: '#00ff88', fontWeight: 700, marginTop: 6, letterSpacing: '0.08em', opacity: 0.7 }}>
+              {myTimeMs !== null && (won || solo) && (
+                <div style={{ fontSize: '0.58rem', color: hc, fontWeight: 700, marginTop: 6, letterSpacing: '0.08em', opacity: 0.7 }}>
                   ★ FASTEST
                 </div>
               )}
             </div>
-          )}
-        </div>
+
+            {!solo && (
+              <div style={{
+                flex: 1, maxWidth: 180,
+                background: !won && !draw ? `rgba(0,255,136,0.06)` : 'rgba(255,255,255,0.025)',
+                border: `1px solid ${!won && !draw ? 'rgba(0,255,136,0.25)' : 'rgba(255,255,255,0.06)'}`,
+                borderRadius: 14, padding: '16px 20px', textAlign: 'center',
+                boxShadow: !won && !draw ? '0 0 24px rgba(0,255,136,0.1)' : 'none',
+              }}>
+                <div style={{ fontSize: '0.58rem', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.25)', marginBottom: 10 }}>
+                  {winnerName || 'Opponent'}
+                </div>
+                <div style={{
+                  fontSize: '2rem', fontWeight: 900, letterSpacing: '-0.03em', fontVariantNumeric: 'tabular-nums', lineHeight: 1,
+                  color: opponentTimeMs !== null ? (!won && !draw ? '#00ff88' : 'rgba(255,255,255,0.5)') : 'rgba(255,255,255,0.3)',
+                  textShadow: !won && !draw && opponentTimeMs !== null ? '0 0 24px rgba(0,255,136,0.7)' : 'none',
+                }}>
+                  {opponentTimeMs !== null ? fmt(animatedOppTime) : 'KIA'}
+                </div>
+                {!won && !draw && opponentTimeMs !== null && (
+                  <div style={{ fontSize: '0.58rem', color: '#00ff88', fontWeight: 700, marginTop: 6, letterSpacing: '0.08em', opacity: 0.7 }}>
+                    ★ FASTEST
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Leaderboard (N-player) */}
+        {!solo && result.players && result.players.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, width: '100%', marginBottom: 28, animation: 'paigon-stat 0.4s 0.5s both' }}>
+            <div style={{ fontSize: '0.52rem', fontWeight: 800, letterSpacing: '0.22em', color: 'rgba(255,255,255,0.2)', textTransform: 'uppercase', marginBottom: 4, textAlign: 'left' }}>
+              Final Standings
+            </div>
+            {result.players.map((p, i) => {
+              const isMe = myTimeMs !== null
+                ? (p.crossed && p.timeMs === myTimeMs)
+                : (!p.crossed && p.name === playerName);
+              return (
+                <div key={i} style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '9px 12px', borderRadius: 10,
+                  background: p.won ? 'rgba(0,255,136,0.06)' : isMe ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.02)',
+                  border: `1px solid ${p.won ? 'rgba(0,255,136,0.25)' : isMe ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.05)'}`,
+                  animation: `paigon-stat 0.35s ${0.55 + i * 0.07}s both`,
+                }}>
+                  <span style={{ fontSize: '0.72rem', fontWeight: 800, fontFamily: 'monospace', color: p.won ? '#00ff88' : 'rgba(255,255,255,0.25)', width: 18, textAlign: 'center' }}>
+                    #{p.rank}
+                  </span>
+                  <div style={{ width: 7, height: 7, borderRadius: '50%', background: p.color, flexShrink: 0 }} />
+                  <span style={{ flex: 1, textAlign: 'left', fontSize: '0.8rem', fontWeight: 700, color: p.won ? '#00ff88' : isMe ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.4)' }}>
+                    {p.name}{isMe ? ' (you)' : ''}
+                  </span>
+                  {p.won && (
+                    <span style={{ fontSize: '0.58rem', color: '#00ff88', fontWeight: 700, letterSpacing: '0.08em', opacity: 0.7 }}>★ FASTEST</span>
+                  )}
+                  <span style={{ fontSize: '0.75rem', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: p.crossed ? (p.won ? '#00ff88' : 'rgba(255,255,255,0.5)') : '#ff4444', minWidth: 44, textAlign: 'right' }}>
+                    {p.timeMs !== null ? fmt(p.timeMs) : 'KIA'}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         <button
           onClick={onPlayAgain}

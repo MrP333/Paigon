@@ -2,41 +2,48 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+    function isAdminEmail() {
+      return request.auth.token.email in [
+        'pjgrimes930@gmail.com',
+        'contact@paigonco.com',
+        'cogrimes33@gmail.com'
+      ];
+    }
+
     // ── Users ──────────────────────────────────────────────────────────────────
     match /users/{uid} {
 
-      // Read own document only
-      allow read: if request.auth != null && request.auth.uid == uid;
+      allow read: if isOwner(uid);
 
-      // Create own document — balanceCents must not be set by the client
-      allow create: if request.auth != null
-                    && request.auth.uid == uid
-                    && !('balanceCents' in request.resource.data);
+      // New accounts: server-only fields must not be set by the client
+      allow create: if isOwner(uid)
+                    && !('balanceCents' in request.resource.data)
+                    && !('isDev'        in request.resource.data)
+                    && !('points'       in request.resource.data);
 
-      // Update own document — balanceCents is server-only (Railway Admin SDK bypasses rules)
-      // Dev accounts (platform owners) can still adjust balance for testing
-      allow update: if request.auth != null
-                    && request.auth.uid == uid
+      // Updates: balanceCents/isDev/points are server-only (Railway Admin SDK bypasses rules)
+      // Admin emails can touch any field for testing
+      allow update: if isOwner(uid)
                     && (
                       !request.resource.data.diff(resource.data)
-                        .affectedKeys().hasAny(['balanceCents', 'isDev'])
-                      || request.auth.token.email in [
-                           'pjgrimes930@gmail.com',
-                           'contact@paigonco.com',
-                           'cogrimes33@gmail.com'
-                         ]
+                        .affectedKeys().hasAny(['balanceCents', 'isDev', 'points'])
+                      || isAdminEmail()
                     );
 
-      // Match history subcollection — clients can read and create their own records
-      // (balance is server-protected so fake records are cosmetic-only)
+      // Match history: client may append entries, never modify or delete
       match /matches/{matchId} {
-        allow read:   if request.auth != null && request.auth.uid == uid;
-        allow create: if request.auth != null && request.auth.uid == uid;
+        allow read:   if isOwner(uid);
+        allow create: if isOwner(uid)
+                      && request.resource.data.keys().hasAll(['game', 'won', 'stakeId', 'createdAt'])
+                      && request.resource.data.createdAt == request.time;
         allow update, delete: if false;
       }
     }
 
-    // ── Leaderboard — public read, server writes only (Admin SDK bypasses rules)
+    // ── Leaderboard — public read, server writes only ─────────────────────────
     match /leaderboard/{uid} {
       allow read: if request.auth != null;
       allow write: if false;
@@ -52,15 +59,25 @@ service cloud.firestore {
       allow update: if false;
     }
 
-    // ── Stripe events — server writes only, no client access ──────────────────
+    // ── Stripe events — server only, no client access ─────────────────────────
     match /stripeEvents/{eventId} {
       allow read, write: if false;
     }
 
-    // ── Recent activity feed — public read, authenticated create only ────────
+    // ── Site stats — public read (homepage ticker), server writes only ─────────
+    match /siteStats/{docId} {
+      allow read:  if true;
+      allow write: if false;
+    }
+
+    // ── Activity feed — public read, authenticated client creates only ─────────
+    // Admin SDK (server) can also write here; client creates require key fields
+    // and a server-issued timestamp to prevent backdating
     match /recentActivity/{entryId} {
       allow read: if true;
-      allow create: if request.auth != null;
+      allow create: if request.auth != null
+                    && request.resource.data.keys().hasAll(['game', 'winner', 'createdAt'])
+                    && request.resource.data.createdAt == request.time;
       allow update, delete: if false;
     }
 

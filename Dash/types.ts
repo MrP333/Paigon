@@ -1,13 +1,10 @@
-export interface Opponent { name: string; color: string; }
+export interface Opponent { name: string; color: string; uid?: string; }
 
 export interface PlayerResult {
   rank: number;
   name: string;
   color: string;
-  score: number;
-  correct: number;
-  attempted: number;
-  timeMs: number;
+  finishTimeMs: number;
   won: boolean;
 }
 
@@ -25,12 +22,8 @@ export interface GameConfig {
 
 export interface ResultData {
   won: boolean;
-  myScore: number;
-  myCorrect: number;
-  myAttempted: number;
-  myTotalMs: number;
-  opponentScore: number | null;
-  opponentCorrect: number | null;
+  myFinishTimeMs: number;
   winnerName: string;
   players?: PlayerResult[];
+  payoutCents?: number;
 }
