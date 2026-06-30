@@ -45,7 +45,7 @@ service cloud.firestore {
 
     // ── Leaderboard — public read, server writes only ─────────────────────────
     match /leaderboard/{uid} {
-      allow read: if request.auth != null;
+      allow read: if true;
       allow write: if false;
     }
 
