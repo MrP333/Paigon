@@ -41,6 +41,7 @@ export default function App() {
     return onAuthStateChanged(auth, async (user) => {
       setFirebaseUser(user);
       if (!user) return;
+      socketRef.current?.emit('user:register', { uid: user.uid });
       const snap = await getDoc(doc(db, 'users', user.uid));
       if (snap.exists()) {
         const data = snap.data();
@@ -87,6 +88,7 @@ export default function App() {
         opponentName: data.opponentName ?? data.opponents?.[0]?.name ?? '',
         opponentColor: data.opponentColor ?? data.opponents?.[0]?.color ?? '#a855f7',
         opponents: data.opponents ?? [],
+        entryCents: data.entryCents ?? 0,
         payoutCents: data.payoutCents || 0,
       } : null);
       setScreen('game');
@@ -168,6 +170,8 @@ export default function App() {
         game: 'ODD_SIGNAL',
         won: result.won,
         stakeId: gameConfig?.stakeId ?? 'free',
+        entryCents: gameConfig?.entryCents ?? 0,
+        stakeCents: gameConfig?.entryCents ?? 0,
         payoutCents: result.won ? (gameConfig?.payoutCents ?? 0) : 0,
         opponent: gameConfig?.opponentName ?? 'Opponent',
         pointsEarned,

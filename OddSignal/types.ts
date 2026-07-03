@@ -19,6 +19,7 @@ export interface GameConfig {
   opponentColor: string;
   opponents?: Opponent[];
   stakeId: string;
+  entryCents?: number;
   payoutCents: number;
   solo?: boolean;
 }

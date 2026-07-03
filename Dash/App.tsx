@@ -40,6 +40,7 @@ export default function App() {
     return onAuthStateChanged(auth, async (user) => {
       setFirebaseUser(user);
       if (!user) return;
+      socketRef.current?.emit('user:register', { uid: user.uid });
       const snap = await getDoc(doc(db, 'users', user.uid));
       if (snap.exists()) {
         const d = snap.data();
@@ -87,6 +88,7 @@ export default function App() {
         opponents:     data.opponents ?? [],
         opponentName:  data.opponents?.[0]?.name ?? '',
         opponentColor: data.opponents?.[0]?.color ?? '#fb923c',
+        entryCents:    data.entryCents ?? 0,
         payoutCents:   data.payoutCents ?? 0,
       } : null);
       setScreen('game');
@@ -151,7 +153,7 @@ export default function App() {
       const pointsEarned = result.won && isPaid ? 20 : 0;
       if (pointsEarned > 0) setPoints(p => p + pointsEarned);
       setDoc(doc(db, 'users', firebaseUser.uid), { winStreak: newWin, lossStreak: newLoss, trialCompletedDash: true }, { merge: true }).catch(console.error);
-      addDoc(collection(db, 'users', firebaseUser.uid, 'matches'), { game: 'DASH', won: result.won, stakeId: gameConfig?.stakeId ?? 'free', payoutCents: result.won ? (gameConfig?.payoutCents ?? 0) : 0, pointsEarned, createdAt: serverTimestamp() }).catch(console.error);
+      addDoc(collection(db, 'users', firebaseUser.uid, 'matches'), { game: 'DASH', won: result.won, stakeId: gameConfig?.stakeId ?? 'free', entryCents: gameConfig?.entryCents ?? 0, stakeCents: gameConfig?.entryCents ?? 0, payoutCents: result.won ? (gameConfig?.payoutCents ?? 0) : 0, pointsEarned, createdAt: serverTimestamp() }).catch(console.error);
       if (result.won) {
         addDoc(collection(db, 'recentActivity'), { game: 'DASH', winner: playerName, winnerColor: playerColor, loser: gameConfig?.opponentName ?? 'Opponent', stakeId: gameConfig?.stakeId ?? 'free', payoutCents: gameConfig?.payoutCents ?? 0, createdAt: serverTimestamp() }).catch(console.error);
       }

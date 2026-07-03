@@ -105,7 +105,11 @@ const CSS = `
   box-shadow: 0 0 8px #00ff88;
   animation: ts-cursor-blink .9s ease-in-out infinite;
 }
-.ts-shake { animation: ts-shake .45s ease-in-out; }
+.ts-cursor--err {
+  background: #ff4444;
+  box-shadow: 0 0 8px #ff4444;
+}
+.ts-shake { animation: ts-shake .38s ease-in-out; }
 `;
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -120,21 +124,23 @@ export default function GameScreen({ config, socket, onResult }: Props) {
   const passage = useMemo(() => getPassage(config.roomCode), [config.roomCode]);
 
   // Refs for keydown handler (avoids stale closures)
-  const currentPosRef = useRef(0);
-  const errorAtRef    = useRef<number | null>(null);
-  const totalErrorsRef = useRef(0);
-  const finishedRef   = useRef(false);
-  const startTimeRef  = useRef(0);
-  const keystampsRef  = useRef<number[]>([]);
+  const currentPosRef    = useRef(0);
+  const errorDepthRef    = useRef(0);   // how many wrong chars are stacked on top of currentPos
+  const totalErrorsRef   = useRef(0);
+  const finishedRef      = useRef(false);
+  const startTimeRef     = useRef(0);
+  const keystampsRef     = useRef<number[]>([]);
+  const errorStartRef    = useRef<number | null>(null); // when we entered error state
+  const totalErrorTimeRef = useRef(0);                  // cumulative ms spent in error state
+  const passageBoxRef    = useRef<HTMLDivElement>(null);
 
   // State for display
-  const [displayPos,   setDisplayPos]   = useState(0);
-  const [displayError, setDisplayError] = useState<number | null>(null);
-  const [liveWpm,      setLiveWpm]      = useState(0);
-  const [countdown,    setCountdown]    = useState<number | string>(3);
-  const [gameStarted,  setGameStarted]  = useState(false);
-  const [finished,     setFinished]     = useState(false);
-  const [shaking,      setShaking]      = useState(false);
+  const [displayPos,        setDisplayPos]        = useState(0);
+  const [displayErrorDepth, setDisplayErrorDepth] = useState(0);
+  const [liveWpm,           setLiveWpm]           = useState(0);
+  const [countdown,         setCountdown]         = useState<number | string>(3);
+  const [gameStarted,       setGameStarted]       = useState(false);
+  const [finished,          setFinished]          = useState(false);
 
   // socketId → { name, color, pos }
   const [opponentProgress, setOpponentProgress] = useState<Record<string, { name: string; color: string; pos: number }>>({});
@@ -167,12 +173,16 @@ export default function GameScreen({ config, socket, onResult }: Props) {
     return () => clearTimeout(t);
   }, []);
 
-  // ── Live WPM ──────────────────────────────────────────────────────────────
+  // ── Live WPM (pauses during error time) ───────────────────────────────────
   useEffect(() => {
     if (!gameStarted || finished) return;
     const iv = setInterval(() => {
       const elapsed = Date.now() - startTimeRef.current;
-      if (elapsed > 0) setLiveWpm(calcWpm(currentPosRef.current, elapsed));
+      if (elapsed > 0) {
+        const ongoingErr = errorStartRef.current ? Date.now() - errorStartRef.current : 0;
+        const effectiveMs = Math.max(1, elapsed - totalErrorTimeRef.current - ongoingErr);
+        setLiveWpm(calcWpm(currentPosRef.current, effectiveMs));
+      }
     }, 400);
     return () => clearInterval(iv);
   }, [gameStarted, finished]);
@@ -224,6 +234,15 @@ export default function GameScreen({ config, socket, onResult }: Props) {
       'F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12',
     ]);
 
+    const triggerShake = () => {
+      const el = passageBoxRef.current;
+      if (!el) return;
+      el.classList.remove('ts-shake');
+      void el.offsetHeight; // force reflow so animation restarts
+      el.classList.add('ts-shake');
+      el.addEventListener('animationend', () => el.classList.remove('ts-shake'), { once: true });
+    };
+
     const handleKey = (e: KeyboardEvent) => {
       if (finishedRef.current) return;
       if (IGNORE.has(e.key)) return;
@@ -236,21 +255,39 @@ export default function GameScreen({ config, socket, onResult }: Props) {
 
       if (e.key === 'Backspace') {
         e.preventDefault();
-        if (errorAtRef.current !== null) {
-          errorAtRef.current = null;
-          setDisplayError(null);
+        if (errorDepthRef.current > 0) {
+          errorDepthRef.current--;
+          setDisplayErrorDepth(errorDepthRef.current);
+          // If all errors cleared, record the time spent in error state
+          if (errorDepthRef.current === 0 && errorStartRef.current !== null) {
+            totalErrorTimeRef.current += Date.now() - errorStartRef.current;
+            errorStartRef.current = null;
+          }
         }
         return;
       }
 
-      if (errorAtRef.current !== null) return;
       if (e.key.length !== 1) return;
 
-      const pos = currentPosRef.current;
-      if (pos >= passage.length) return;
+      const curPos = currentPosRef.current;
+      const errDepth = errorDepthRef.current;
 
-      if (e.key === passage[pos]) {
-        const newPos = pos + 1;
+      // ── Already in error state: stack another error (up to passage end) ──
+      if (errDepth > 0) {
+        if (curPos + errDepth < passage.length) {
+          errorDepthRef.current++;
+          totalErrorsRef.current++;
+          setDisplayErrorDepth(errorDepthRef.current);
+        }
+        triggerShake();
+        return;
+      }
+
+      // ── No errors: check character ──
+      if (curPos >= passage.length) return;
+
+      if (e.key === passage[curPos]) {
+        const newPos = curPos + 1;
         currentPosRef.current = newPos;
         setDisplayPos(newPos);
 
@@ -259,10 +296,12 @@ export default function GameScreen({ config, socket, onResult }: Props) {
         }
 
         if (newPos === passage.length) {
-          const finishMs = Date.now() - startTimeRef.current;
+          const totalMs = Date.now() - startTimeRef.current;
+          const ongoingErr = errorStartRef.current ? Date.now() - errorStartRef.current : 0;
+          const effectiveMs = Math.max(1, totalMs - totalErrorTimeRef.current - ongoingErr);
           finishedRef.current = true;
           setFinished(true);
-          const finalWpm = calcWpm(newPos, finishMs);
+          const finalWpm = calcWpm(newPos, effectiveMs);
           const accuracy = totalErrorsRef.current > 0
             ? Math.round(newPos / (newPos + totalErrorsRef.current) * 100)
             : 100;
@@ -272,14 +311,14 @@ export default function GameScreen({ config, socket, onResult }: Props) {
               won: true,
               myWpm: finalWpm,
               myAccuracy: accuracy,
-              myFinishMs: finishMs,
+              myFinishMs: totalMs,
               players: [{
                 rank: 1,
                 name: config.playerName,
                 color: config.playerColor,
                 wpm: finalWpm,
                 accuracy,
-                finishMs,
+                finishMs: totalMs,
                 won: true,
                 isMe: true,
               }],
@@ -287,18 +326,21 @@ export default function GameScreen({ config, socket, onResult }: Props) {
           } else {
             socket.emit('type:finish', {
               roomCode: config.roomCode,
-              totalTimeMs: finishMs,
+              totalTimeMs: totalMs,
               wpm: finalWpm,
               accuracy,
             });
           }
         }
       } else {
-        errorAtRef.current = pos;
+        // Wrong character — enter error state
+        errorDepthRef.current = 1;
         totalErrorsRef.current++;
-        setDisplayError(pos);
-        setShaking(true);
-        setTimeout(() => setShaking(false), 450);
+        if (errorStartRef.current === null) {
+          errorStartRef.current = Date.now();
+        }
+        setDisplayErrorDepth(1);
+        triggerShake();
       }
     };
 
@@ -316,6 +358,8 @@ export default function GameScreen({ config, socket, onResult }: Props) {
   const accuracy = totalErrorsRef.current > 0
     ? Math.round(displayPos / (displayPos + totalErrorsRef.current) * 100)
     : 100;
+
+  const errEnd = displayPos + displayErrorDepth;
 
   const myPct = passage.length > 0 ? displayPos / passage.length : 0;
 
@@ -387,7 +431,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
 
         {/* ── Passage display ── */}
         <div
-          className={shaking ? 'ts-shake' : ''}
+          ref={passageBoxRef}
           style={{
             fontFamily: "'Courier New', Courier, monospace",
             fontSize: 'clamp(1.05rem, 2.2vw, 1.35rem)',
@@ -406,14 +450,16 @@ export default function GameScreen({ config, socket, onResult }: Props) {
         >
           {Array.from(passage).map((ch, i) => {
             const isCorrect = i < displayPos;
-            const isError   = i === displayError;
-            const isCursor  = i === displayPos && displayError === null && !finished;
+            const isError   = i >= displayPos && i < errEnd;
+            const isCursor  = i === errEnd && !finished;
 
             const color = isCorrect
               ? '#00ff88'
               : isError
                 ? '#ff4444'
-                : 'rgba(255,255,255,0.3)';
+                : isCursor
+                  ? 'rgba(255,255,255,0.9)'
+                  : 'rgba(255,255,255,0.3)';
 
             const bg = isError
               ? 'rgba(255,68,68,0.18)'
@@ -434,7 +480,9 @@ export default function GameScreen({ config, socket, onResult }: Props) {
                 }}
               >
                 {ch}
-                {isCursor && <span className="ts-cursor" />}
+                {isCursor && (
+                  <span className={`ts-cursor${displayErrorDepth > 0 ? ' ts-cursor--err' : ''}`} />
+                )}
               </span>
             );
           })}
