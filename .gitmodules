@@ -1,0 +1,7 @@
+[submodule "MazerGame"]
+	path = MazerGame
+	url = https://github.com/MrP333/Mazer_Game1.2.git
+
+[submodule "game-website"]
+	path = game-website
+	url = https://github.com/MrP333/my-game-site.git
