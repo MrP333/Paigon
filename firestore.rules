@@ -37,7 +37,7 @@ service cloud.firestore {
       match /matches/{matchId} {
         allow read:   if isOwner(uid);
         allow create: if isOwner(uid)
-                      && request.resource.data.keys().hasAll(['game', 'won', 'stakeId', 'createdAt'])
+                      && request.resource.data.keys().hasAll(['game', 'won', 'createdAt'])
                       && request.resource.data.createdAt == request.time;
         allow update, delete: if false;
       }

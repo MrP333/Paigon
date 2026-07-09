@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { doc, getDoc, setDoc, addDoc, collection, serverTimestamp, increment } from 'firebase/firestore';
+import { doc, getDoc, setDoc, addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from './services/firebase';
 import { GameConfig, ResultData } from './types';
 import HomeScreen from './components/HomeScreen';
@@ -190,13 +190,10 @@ export default function App() {
       setWinStreak(newWin);
       setLossStreak(newLoss);
 
-      // Award points on win in paid lobby only
+      // Award points on win in paid lobby only (server writes to Firestore via creditWinner)
       const isPaid = (r.entryCents ?? 0) > 0;
       const pointsEarned = r.won && isPaid ? 20 : 0;
-      if (pointsEarned > 0) {
-        setPoints(p => p + pointsEarned);
-        setDoc(doc(db, 'users', firebaseUser.uid), { points: increment(pointsEarned) }, { merge: true }).catch(console.error);
-      }
+      if (pointsEarned > 0) setPoints(p => p + pointsEarned);
       setDoc(doc(db, 'users', firebaseUser.uid), {
         winStreak: newWin, lossStreak: newLoss,
       }, { merge: true }).catch(console.error);
