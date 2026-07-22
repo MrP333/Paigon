@@ -3,6 +3,7 @@ import { io, Socket } from 'socket.io-client';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { doc, getDoc, setDoc, addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from './services/firebase';
+import { identifyUser, track } from './services/analytics';
 import CalibrationGate from './components/CalibrationGate';
 import HomeScreen from './components/HomeScreen';
 import WaitingScreen from './components/WaitingScreen';
@@ -38,7 +39,7 @@ export default function App() {
     return onAuthStateChanged(auth, async (user) => {
       setFirebaseUser(user);
       if (!user) return;
-      socketRef.current?.emit('user:register', { uid: user.uid });
+      try { const idToken = await user.getIdToken(); socketRef.current?.emit('user:register', { uid: user.uid, idToken }); } catch { /* no-op */ }
       const snap = await getDoc(doc(db, 'users', user.uid));
       if (snap.exists()) {
         const d = snap.data();
@@ -47,6 +48,7 @@ export default function App() {
         setBalance(d.balanceCents ?? 0);
         if (d.trialCompletedType) setTrialComplete(true);
         if (d.isDev) setIsDev(true);
+        identifyUser(user.uid, d.username || user.email || user.uid);
         const today = new Date().toISOString().slice(0, 10);
         if (d.soloRunsDateType === today) setSoloRunsToday(d.soloRunsTodayType ?? 0);
         setPoints(d.points ?? 0);
@@ -80,6 +82,7 @@ export default function App() {
     const sock = getSocket();
 
     sock.on('type:matched', (data: Record<string, unknown>) => {
+      track('Game Matched', { game: 'TypeStrike', stake: data.stakeId });
       setQueueCount(undefined);
       const roomCode = data.roomCode as string;
       const opponents = (data.opponents as { name: string; color: string }[]) ?? [];
@@ -100,7 +103,7 @@ export default function App() {
     });
 
     sock.on('queue:count', (data: { count: number; min: number; max: number }) => setQueueCount(data));
-    sock.on('balance:update', ({ delta }: { delta: number }) => setBalance(b => b + delta));
+    sock.on('balance:update', ({ delta }: { delta: number }) => { setBalance(b => b + delta); track('Balance Credited', { game: 'TypeStrike', delta_cents: delta }); });
 
     return () => {
       sock.off('type:matched');
@@ -127,6 +130,7 @@ export default function App() {
       }
     });
     setGameConfig({ roomCode: '', playerName: name, playerColor: color, opponentName: '', opponentColor: '#22d3ee', stakeId, payoutCents: 0 });
+    track('Game Queued', { game: 'TypeStrike', stake: stakeId });
     setScreen('waiting');
   }
 
@@ -160,6 +164,7 @@ export default function App() {
       const isPaid = gameConfig?.stakeId && !['free'].includes(gameConfig.stakeId);
       const pointsEarned = result.won && isPaid ? 20 : 0;
       if (pointsEarned > 0) setPoints(p => p + pointsEarned);
+      track('Game Result', { game: 'TypeStrike', won: result.won, stake: gameConfig?.stakeId, paid: !!isPaid, wpm: result.myWpm });
 
       setDoc(doc(db, 'users', firebaseUser.uid), {
         winStreak: newWin, lossStreak: newLoss, trialCompletedType: true,
@@ -232,7 +237,7 @@ export default function App() {
         <GameScreen config={gameConfig} socket={getSocket()} onResult={handleResult} />
       )}
       {screen === 'result' && resultData && (
-        <ResultScreen result={resultData} onPlayAgain={handlePlayAgain} solo={gameConfig?.solo} config={gameConfig} />
+        <ResultScreen result={resultData} onPlayAgain={handlePlayAgain} solo={gameConfig?.solo} config={gameConfig} winStreak={winStreak} />
       )}
     </div>
   );
