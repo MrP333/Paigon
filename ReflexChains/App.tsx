@@ -3,6 +3,7 @@ import { io, Socket } from 'socket.io-client';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { doc, getDoc, setDoc, addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from './services/firebase';
+import { identifyUser, track } from './services/analytics';
 import CalibrationGate from './components/CalibrationGate';
 import HomeScreen from './components/HomeScreen';
 import WaitingScreen from './components/WaitingScreen';
@@ -46,7 +47,7 @@ export default function App() {
     return onAuthStateChanged(auth, async (user) => {
       setFirebaseUser(user);
       if (!user) return;
-      socketRef.current?.emit('user:register', { uid: user.uid });
+      try { const idToken = await user.getIdToken(); socketRef.current?.emit('user:register', { uid: user.uid, idToken }); } catch { /* no-op */ }
       const snap = await getDoc(doc(db, 'users', user.uid));
       if (snap.exists()) {
         const data = snap.data();
@@ -55,6 +56,7 @@ export default function App() {
         setBalance(data.balanceCents ?? 0);
         if (data.trialCompletedReflex) setTrialComplete(true);
         if (data.isDev) setIsDev(true);
+        identifyUser(user.uid, data.username || user.email || user.uid);
         const today = new Date().toISOString().slice(0, 10);
         if (data.soloRunsDate === today) setSoloRunsToday(data.soloRunsToday ?? 0);
         setPoints(data.points ?? 0);
@@ -89,6 +91,7 @@ export default function App() {
     const sock = getSocket();
 
     sock.on('reflex:matched', (data: any) => {
+      track('Game Matched', { game: 'ReflexChains', stake: data.stakeId });
       setQueueCount(undefined);
       setGameConfig(prev => prev ? {
         ...prev,
@@ -108,6 +111,7 @@ export default function App() {
 
     sock.on('balance:update', ({ delta }: { delta: number }) => {
       setBalance(b => b + delta);
+      track('Balance Credited', { game: 'ReflexChains', delta_cents: delta });
     });
 
     sock.on('connect_error', () => console.warn('[reflex] socket connect error'));
@@ -124,11 +128,13 @@ export default function App() {
   }
 
   function handleBotTrial() {
+    track('Trial Started', { game: 'ReflexChains' });
     setScreen('trial');
   }
 
   function handleTrialComplete() {
     setTrialComplete(true);
+    track('Trial Completed', { game: 'ReflexChains' });
     if (firebaseUser) {
       setDoc(doc(db, 'users', firebaseUser.uid), { trialCompletedReflex: true }, { merge: true }).catch(console.error);
     }
@@ -162,6 +168,7 @@ export default function App() {
       stakeId,
       payoutCents: 0,
     });
+    track('Game Queued', { game: 'ReflexChains', stake: stakeId });
     setScreen('waiting');
   }
 
@@ -205,6 +212,7 @@ export default function App() {
       const isPaid = gameConfig?.stakeId && !['free', 'practice'].includes(gameConfig.stakeId);
       const pointsEarned = result.won && isPaid ? 20 : 0;
       if (pointsEarned > 0) setPoints(p => p + pointsEarned);
+      track('Game Result', { game: 'ReflexChains', won: result.won, stake: gameConfig?.stakeId, paid: !!isPaid });
       setDoc(doc(db, 'users', firebaseUser.uid), {
         winStreak: newWin, lossStreak: newLoss,
       }, { merge: true }).catch(console.error);
