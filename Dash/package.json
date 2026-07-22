@@ -14,6 +14,7 @@
     "@stripe/react-stripe-js": "^6.6.0",
     "@stripe/stripe-js": "^9.8.0",
     "firebase": "^12.14.0",
+    "mixpanel-browser": "^2.81.0",
     "react": "18.2.0",
     "react-dom": "18.2.0",
     "socket.io-client": "^4.8.3",

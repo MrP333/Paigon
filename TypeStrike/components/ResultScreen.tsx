@@ -78,14 +78,19 @@ function fmtMs(ms: number | null) {
   return `${s}.${d.toString().padStart(2, '0')}s`;
 }
 
+function fmtCents(cents: number) {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
 interface Props {
   result: ResultData;
   onPlayAgain: () => void;
   solo?: boolean;
   config?: GameConfig | null;
+  winStreak?: number;
 }
 
-export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
+export default function ResultScreen({ result, onPlayAgain, solo, config, winStreak }: Props) {
   const { won, myWpm, myAccuracy, myFinishMs, players } = result;
 
   const [show, setShow] = useState(false);
@@ -169,6 +174,37 @@ export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
               </div>
             )}
           </div>
+
+          {/* Payout display */}
+          {!solo && config && (config.payoutCents > 0 || (config.entryCents ?? 0) > 0) && (
+            <div style={{ animation: 'ts-stat-in .35s .3s both', textAlign: 'center' }}>
+              {won ? (
+                <div>
+                  <div style={{ fontSize: '2.4rem', fontWeight: 900, color: '#ffd700', textShadow: '0 0 24px rgba(255,215,0,.55)', letterSpacing: '-0.02em', lineHeight: 1 }}>
+                    +{fmtCents(config.payoutCents)}
+                  </div>
+                  <div style={{ fontSize: '0.62rem', color: 'rgba(255,215,0,.45)', marginTop: 4, letterSpacing: '0.1em', textTransform: 'uppercase' }}>earned</div>
+                </div>
+              ) : (
+                <div>
+                  <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'rgba(255,255,255,.25)', letterSpacing: '-0.01em', lineHeight: 1 }}>
+                    -{fmtCents(config.entryCents ?? 0)}
+                  </div>
+                  <div style={{ fontSize: '0.62rem', color: 'rgba(255,255,255,.15)', marginTop: 4, letterSpacing: '0.1em', textTransform: 'uppercase' }}>entry fee</div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Win streak */}
+          {won && !solo && winStreak && winStreak >= 2 && (
+            <div style={{ animation: 'ts-stat-in .35s .32s both', textAlign: 'center' }}>
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '7px 16px', borderRadius: 99, background: 'rgba(255,165,0,.1)', border: '1px solid rgba(255,165,0,.3)' }}>
+                <span style={{ fontSize: '1rem' }}>🔥</span>
+                <span style={{ fontSize: '0.78rem', fontWeight: 800, color: '#ffa500', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{winStreak} Win Streak</span>
+              </div>
+            </div>
+          )}
 
           {/* My stats summary */}
           <div style={{ display: 'flex', gap: 10, animation: 'ts-stat-in .35s .35s both' }}>
