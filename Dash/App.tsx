@@ -3,6 +3,7 @@ import { io, Socket } from 'socket.io-client';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { doc, getDoc, setDoc, addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from './services/firebase';
+import { identifyUser, track } from './services/analytics';
 import CalibrationGate from './components/CalibrationGate';
 import HomeScreen from './components/HomeScreen';
 import WaitingScreen from './components/WaitingScreen';
@@ -40,7 +41,7 @@ export default function App() {
     return onAuthStateChanged(auth, async (user) => {
       setFirebaseUser(user);
       if (!user) return;
-      socketRef.current?.emit('user:register', { uid: user.uid });
+      try { const idToken = await user.getIdToken(); socketRef.current?.emit('user:register', { uid: user.uid, idToken }); } catch { /* no-op */ }
       const snap = await getDoc(doc(db, 'users', user.uid));
       if (snap.exists()) {
         const d = snap.data();
@@ -49,6 +50,7 @@ export default function App() {
         setBalance(d.balanceCents ?? 0);
         if (d.trialCompletedDash) setTrialComplete(true);
         if (d.isDev) setIsDev(true);
+        identifyUser(user.uid, d.username || user.email || user.uid);
         const today = new Date().toISOString().slice(0, 10);
         if (d.soloRunsDateDash === today) setSoloRunsToday(d.soloRunsTodayDash ?? 0);
         setPoints(d.points ?? 0);
@@ -81,6 +83,7 @@ export default function App() {
   useEffect(() => {
     const sock = getSocket();
     sock.on('dash:matched', (data: any) => {
+      track('Game Matched', { game: 'Dash', stake: data.stakeId });
       setQueueCount(undefined);
       setGameConfig(prev => prev ? {
         ...prev,
@@ -94,7 +97,7 @@ export default function App() {
       setScreen('game');
     });
     sock.on('queue:count', (data: { count: number; min: number; max: number }) => setQueueCount(data));
-    sock.on('balance:update', ({ delta }: { delta: number }) => setBalance(b => b + delta));
+    sock.on('balance:update', ({ delta }: { delta: number }) => { setBalance(b => b + delta); track('Balance Credited', { game: 'Dash', delta_cents: delta }); });
     return () => {
       sock.off('dash:matched');
       sock.off('queue:count');
@@ -117,6 +120,7 @@ export default function App() {
       }
     });
     setGameConfig({ roomCode: '', playerName: name, playerColor: color, opponentName: '', opponentColor: '#fb923c', stakeId, payoutCents: 0 });
+    track('Game Queued', { game: 'Dash', stake: stakeId });
     setScreen('waiting');
   }
 
@@ -132,6 +136,7 @@ export default function App() {
 
   // Trial = first solo run to unlock paid lobbies
   async function handleBotTrial() {
+    track('Trial Started', { game: 'Dash' });
     await handleSolo(resolve(), playerColor);
   }
 
@@ -152,6 +157,7 @@ export default function App() {
       const isPaid = gameConfig?.stakeId && !['free'].includes(gameConfig.stakeId);
       const pointsEarned = result.won && isPaid ? 20 : 0;
       if (pointsEarned > 0) setPoints(p => p + pointsEarned);
+      track('Game Result', { game: 'Dash', won: result.won, stake: gameConfig?.stakeId, paid: !!isPaid });
       setDoc(doc(db, 'users', firebaseUser.uid), { winStreak: newWin, lossStreak: newLoss, trialCompletedDash: true }, { merge: true }).catch(console.error);
       addDoc(collection(db, 'users', firebaseUser.uid, 'matches'), { game: 'DASH', won: result.won, stakeId: gameConfig?.stakeId ?? 'free', entryCents: gameConfig?.entryCents ?? 0, stakeCents: gameConfig?.entryCents ?? 0, payoutCents: result.won ? (gameConfig?.payoutCents ?? 0) : 0, pointsEarned, createdAt: serverTimestamp() }).catch(console.error);
       if (result.won) {
