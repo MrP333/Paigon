@@ -3,6 +3,7 @@ import { io, Socket } from 'socket.io-client';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { doc, getDoc, setDoc, addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from './services/firebase';
+import { identifyUser, track } from './services/analytics';
 import { GameConfig, ResultData } from './types';
 import HomeScreen from './components/HomeScreen';
 import GameScreen from './components/GameScreen';
@@ -45,6 +46,7 @@ export default function App() {
     return onAuthStateChanged(auth, async (user) => {
       setFirebaseUser(user);
       if (!user) return;
+      try { const idToken = await user.getIdToken(); socketRef.current?.emit('user:register', { uid: user.uid, idToken }); } catch { /* no-op */ }
       const snap = await getDoc(doc(db, 'users', user.uid));
       if (snap.exists()) {
         const data = snap.data();
@@ -53,6 +55,7 @@ export default function App() {
         setBalance(data.balanceCents ?? 0);
         if (data.trialCompletedNml) setTrialComplete(true);
         if (data.isDev) setIsDev(true);
+        identifyUser(user.uid, data.username || user.email || user.uid);
         const today = new Date().toISOString().slice(0, 10);
         if (data.soloRunsDate === today) setSoloRunsToday(data.soloRunsToday ?? 0);
         setPoints(data.points ?? 0);
@@ -82,6 +85,7 @@ export default function App() {
     socketRef.current = s;
 
     s.on('nml:matched', (data: any) => {
+      track('Game Matched', { game: 'NoMansLand', stake: data.stakeId });
       setQueueCount(undefined);
       setConfig(prev => prev ? {
         ...prev,
@@ -101,6 +105,7 @@ export default function App() {
 
     s.on('balance:update', ({ delta }: { delta: number }) => {
       setBalance(b => b + delta);
+      track('Balance Credited', { game: 'NoMansLand', delta_cents: delta });
     });
 
     s.on('match:error', ({ code }: { code: string }) => {
@@ -114,11 +119,13 @@ export default function App() {
   }, []);
 
   const handleBotTrial = () => {
+    track('Trial Started', { game: 'NoMansLand' });
     setScreen('trial');
   };
 
   const handleTrialComplete = () => {
     setTrialComplete(true);
+    track('Trial Completed', { game: 'NoMansLand' });
     if (firebaseUser) {
       setDoc(doc(db, 'users', firebaseUser.uid), { trialCompletedNml: true }, { merge: true }).catch(console.error);
     }
@@ -145,6 +152,7 @@ export default function App() {
       payoutCents: 0,
     });
     const idToken = firebaseUser ? await firebaseUser.getIdToken() : null;
+    track('Game Queued', { game: 'NoMansLand', stake: stakeId });
     s.emit('nml:queue', { name: playerName, color: playerColor, stakeId, idToken }, (res: any) => {
       if (res?.error === 'insufficient_balance') {
         alert('Not enough Paigon Credits. Visit your account page to add PC.');
@@ -190,8 +198,9 @@ export default function App() {
       setWinStreak(newWin);
       setLossStreak(newLoss);
 
-      // Award points on win in paid lobby only (server writes to Firestore via creditWinner)
       const isPaid = (r.entryCents ?? 0) > 0;
+      track('Game Result', { game: 'NoMansLand', won: r.won, stake: config?.stakeId, paid: isPaid });
+      // Award points on win in paid lobby only (server writes to Firestore via creditWinner)
       const pointsEarned = r.won && isPaid ? 20 : 0;
       if (pointsEarned > 0) setPoints(p => p + pointsEarned);
       setDoc(doc(db, 'users', firebaseUser.uid), {
