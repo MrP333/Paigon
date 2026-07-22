@@ -3,6 +3,7 @@ import { io, Socket } from 'socket.io-client';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { doc, getDoc, setDoc, addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from './services/firebase';
+import { identifyUser, track } from './services/analytics';
 import CalibrationGate from './components/CalibrationGate';
 import HomeScreen from './components/HomeScreen';
 import WaitingScreen from './components/WaitingScreen';
@@ -41,7 +42,7 @@ export default function App() {
     return onAuthStateChanged(auth, async (user) => {
       setFirebaseUser(user);
       if (!user) return;
-      socketRef.current?.emit('user:register', { uid: user.uid });
+      try { const idToken = await user.getIdToken(); socketRef.current?.emit('user:register', { uid: user.uid, idToken }); } catch { /* no-op */ }
       const snap = await getDoc(doc(db, 'users', user.uid));
       if (snap.exists()) {
         const data = snap.data();
@@ -49,6 +50,7 @@ export default function App() {
         setBalance(data.balanceCents ?? 0);
         if (data.trialCompletedOdd) setTrialComplete(true);
         if (data.isDev) setIsDev(true);
+        identifyUser(user.uid, data.username || user.email || user.uid);
         const today = new Date().toISOString().slice(0, 10);
         if (data.soloRunsDateOdd === today) setSoloRunsToday(data.soloRunsTodayOdd ?? 0);
         setPoints(data.points ?? 0);
@@ -81,6 +83,7 @@ export default function App() {
   useEffect(() => {
     const sock = getSocket();
     sock.on('odd:matched', (data: any) => {
+      track('Game Matched', { game: 'OddSignal', stake: data.stakeId });
       setQueueCount(undefined);
       setGameConfig(prev => prev ? {
         ...prev,
@@ -98,6 +101,7 @@ export default function App() {
     });
     sock.on('balance:update', ({ delta }: { delta: number }) => {
       setBalance(b => b + delta);
+      track('Balance Credited', { game: 'OddSignal', delta_cents: delta });
     });
     sock.on('connect_error', () => console.warn('[odd-signal] socket connect error'));
     return () => { sock.off('odd:matched'); sock.off('balance:update'); sock.off('queue:count'); };
@@ -107,10 +111,11 @@ export default function App() {
     return playerName.trim() || `PLAYER-${Math.floor(Math.random() * 9000) + 1000}`;
   }
 
-  function handleBotTrial() { setScreen('trial'); }
+  function handleBotTrial() { track('Trial Started', { game: 'OddSignal' }); setScreen('trial'); }
 
   function handleTrialComplete() {
     setTrialComplete(true);
+    track('Trial Completed', { game: 'OddSignal' });
     if (firebaseUser) {
       setDoc(doc(db, 'users', firebaseUser.uid), { trialCompletedOdd: true }, { merge: true }).catch(console.error);
     }
@@ -132,6 +137,7 @@ export default function App() {
       }
     });
     setGameConfig({ roomCode: '', playerName: name, playerColor: color, opponentName: '', opponentColor: '#ec4899', stakeId, payoutCents: 0 });
+    track('Game Queued', { game: 'OddSignal', stake: stakeId });
     setScreen('waiting');
   }
 
@@ -163,6 +169,7 @@ export default function App() {
 
       const isPaid = gameConfig?.stakeId && !['free', 'practice'].includes(gameConfig.stakeId);
       const pointsEarned = result.won && isPaid ? 20 : 0;
+      track('Game Result', { game: 'OddSignal', won: result.won, stake: gameConfig?.stakeId, paid: !!isPaid });
       if (pointsEarned > 0) setPoints(p => p + pointsEarned);
       setDoc(doc(db, 'users', firebaseUser.uid), { winStreakOdd: newWin, lossStreakOdd: newLoss }, { merge: true }).catch(console.error);
 
