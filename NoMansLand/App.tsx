@@ -119,7 +119,7 @@ export default function App() {
     s.on('tournament:lobby-assigned', (data: any) => {
       if (data.game !== 'NML') return;
       if (data.autoAdvance) { setTournamentBanner(`You auto-advanced to Round ${(data.roundNumber || 0) + 1}!`); return; }
-      setConfig({ roomCode: data.roomCode, playerName, playerColor, opponentName: data.opponentName ?? '', opponentColor: data.opponentColor ?? '#fb923c', opponents: data.opponents ?? [], entryCents: 0, payoutCents: 0, stakeId: 'tournament' });
+      setConfig({ roomCode: data.roomCode, playerName, playerColor, opponentName: data.opponentName ?? '', opponentColor: data.opponentColor ?? '#fb923c', opponents: data.opponents ?? [], payoutCents: 0, stakeId: 'tournament' });
       setTournamentBanner(null);
       setScreen('game');
     });
