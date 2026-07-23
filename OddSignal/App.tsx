@@ -37,6 +37,7 @@ export default function App() {
   const [winStreak, setWinStreak]   = useState(0);
   const [lossStreak, setLossStreak] = useState(0);
   const [queueCount, setQueueCount] = useState<{ count: number; min: number; max: number } | undefined>(undefined);
+  const [tournamentBanner, setTournamentBanner] = useState<string | null>(null);
 
   useEffect(() => {
     return onAuthStateChanged(auth, async (user) => {
@@ -104,7 +105,21 @@ export default function App() {
       track('Balance Credited', { game: 'OddSignal', delta_cents: delta });
     });
     sock.on('connect_error', () => console.warn('[odd-signal] socket connect error'));
-    return () => { sock.off('odd:matched'); sock.off('balance:update'); sock.off('queue:count'); };
+
+    sock.on('tournament:lobby-assigned', (data: any) => {
+      if (data.game !== 'ODD') return;
+      if (data.autoAdvance) { setTournamentBanner(`You auto-advanced to Round ${(data.roundNumber || 0) + 1}!`); return; }
+      setGameConfig({ roomCode: data.roomCode, playerName: resolveName(), playerColor, opponentName: data.opponentName ?? '', opponentColor: data.opponentColor ?? '#a855f7', opponents: data.opponents ?? [], entryCents: 0, payoutCents: 0, stakeId: 'tournament' });
+      setTournamentBanner(null);
+      setScreen('game');
+    });
+    sock.on('tournament:eliminated', () => setTournamentBanner('You\'ve been eliminated from the tournament.'));
+    sock.on('tournament:complete', (data: any) => {
+      const me = (data.finalRankings || []).find((r: any) => r.uid === firebaseUser?.uid);
+      if (me) { const s = ['st','nd','rd','th'][Math.min(me.rank - 1, 3)]; const p = me.prizeCents > 0 ? ` — +${Math.round(me.prizeCents / 100)} PC!` : ''; setTournamentBanner(`Tournament over! You finished ${me.rank}${s}${p}`); if (me.prizeCents > 0) setBalance(b => b + me.prizeCents); }
+    });
+
+    return () => { sock.off('odd:matched'); sock.off('balance:update'); sock.off('queue:count'); sock.off('tournament:lobby-assigned'); sock.off('tournament:eliminated'); sock.off('tournament:complete'); };
   }, []);
 
   function resolveName() {
@@ -162,7 +177,7 @@ export default function App() {
   function handleResult(result: ResultData) {
     setResultData(result);
     setScreen('result');
-    if (firebaseUser && !gameConfig?.solo) {
+    if (firebaseUser && !gameConfig?.solo && gameConfig?.stakeId !== 'tournament') {
       const newWin  = result.won ? winStreak + 1 : 0;
       const newLoss = !result.won ? lossStreak + 1 : 0;
       setWinStreak(newWin); setLossStreak(newLoss);
@@ -254,6 +269,12 @@ export default function App() {
       )}
       {showDeposit && firebaseUser && (
         <DepositModal user={firebaseUser} onClose={() => setShowDeposit(false)} onSuccess={(c) => { if (c > 0) setBalance(b => b + c); }} />
+      )}
+      {tournamentBanner && (
+        <div style={{ position: 'fixed', top: 20, left: '50%', transform: 'translateX(-50%)', background: 'rgba(0,0,0,0.92)', border: '1px solid #a855f7', borderRadius: 8, padding: '12px 24px', color: '#a855f7', fontSize: '0.9rem', fontWeight: 700, zIndex: 9999, maxWidth: '90vw', textAlign: 'center', boxShadow: '0 0 20px rgba(168,85,247,0.3)' }}>
+          {tournamentBanner}
+          <button onClick={() => setTournamentBanner(null)} style={{ marginLeft: 16, background: 'none', border: 'none', color: 'rgba(168,85,247,0.5)', cursor: 'pointer', fontSize: '0.85rem' }}>✕</button>
+        </div>
       )}
     </div>
   );

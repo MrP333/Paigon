@@ -81,6 +81,18 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // ── Tournaments — public read, server Admin SDK writes only ──────────────────
+    match /tournaments/{tournamentId} {
+      allow read:  if true;
+      allow write: if false;
+    }
+
+    // ── Tournament schedules — authenticated read, server writes only ─────────────
+    match /tournamentSchedules/{scheduleId} {
+      allow read:  if request.auth != null;
+      allow write: if false;
+    }
+
     // ── Default: deny everything not explicitly allowed ────────────────────────
     match /{document=**} {
       allow read, write: if false;

@@ -35,6 +35,7 @@ export default function App() {
   const [winStreak, setWinStreak] = useState(0);
   const [lossStreak, setLossStreak] = useState(0);
   const [queueCount, setQueueCount] = useState<{ count: number; min: number; max: number } | undefined>(undefined);
+  const [tournamentBanner, setTournamentBanner] = useState<string | null>(null);
 
 
   const SOLO_DAILY_LIMIT = 5;
@@ -115,6 +116,19 @@ export default function App() {
       setScreen('home');
     });
 
+    s.on('tournament:lobby-assigned', (data: any) => {
+      if (data.game !== 'NML') return;
+      if (data.autoAdvance) { setTournamentBanner(`You auto-advanced to Round ${(data.roundNumber || 0) + 1}!`); return; }
+      setConfig({ roomCode: data.roomCode, playerName, playerColor, opponentName: data.opponentName ?? '', opponentColor: data.opponentColor ?? '#fb923c', opponents: data.opponents ?? [], entryCents: 0, payoutCents: 0, stakeId: 'tournament' });
+      setTournamentBanner(null);
+      setScreen('game');
+    });
+    s.on('tournament:eliminated', () => setTournamentBanner('You\'ve been eliminated from the tournament.'));
+    s.on('tournament:complete', (data: any) => {
+      const me = (data.finalRankings || []).find((r: any) => r.uid === firebaseUser?.uid);
+      if (me) { const suffix = ['st','nd','rd','th'][Math.min(me.rank - 1, 3)]; const prize = me.prizeCents > 0 ? ` — +${Math.round(me.prizeCents / 100)} PC!` : ''; setTournamentBanner(`Tournament over! You finished ${me.rank}${suffix}${prize}`); if (me.prizeCents > 0) setBalance(b => b + me.prizeCents); }
+    });
+
     return () => { s.disconnect(); socketRef.current = null; };
   }, []);
 
@@ -192,7 +206,7 @@ export default function App() {
   const handleResult = (r: ResultData) => {
     setResult(r);
     setScreen('result');
-    if (firebaseUser && !config?.solo) {
+    if (firebaseUser && !config?.solo && config?.stakeId !== 'tournament') {
       const newWin  = r.won ? winStreak + 1 : 0;
       const newLoss = !r.won && !r.draw ? lossStreak + 1 : 0;
       setWinStreak(newWin);
@@ -388,6 +402,12 @@ export default function App() {
             if (creditCents > 0) setBalance(b => b + creditCents);
           }}
         />
+      )}
+      {tournamentBanner && (
+        <div style={{ position: 'fixed', top: 20, left: '50%', transform: 'translateX(-50%)', background: 'rgba(0,0,0,0.92)', border: '1px solid #ffa020', borderRadius: 8, padding: '12px 24px', color: '#ffa020', fontSize: '0.9rem', fontWeight: 700, zIndex: 9999, maxWidth: '90vw', textAlign: 'center', boxShadow: '0 0 20px rgba(255,160,32,0.3)' }}>
+          {tournamentBanner}
+          <button onClick={() => setTournamentBanner(null)} style={{ marginLeft: 16, background: 'none', border: 'none', color: 'rgba(255,160,32,0.5)', cursor: 'pointer', fontSize: '0.85rem' }}>✕</button>
+        </div>
       )}
     </div>
   );
