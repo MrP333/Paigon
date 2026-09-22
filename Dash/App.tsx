@@ -5,6 +5,7 @@ import { doc, getDoc, setDoc, addDoc, collection, serverTimestamp } from 'fireba
 import { auth, db } from './services/firebase';
 import { identifyUser, track } from './services/analytics';
 import CalibrationGate from './components/CalibrationGate';
+import Notice, { NoticeData } from './components/Notice';
 import HomeScreen from './components/HomeScreen';
 import WaitingScreen from './components/WaitingScreen';
 import GameScreen from './components/GameScreen';
@@ -20,6 +21,7 @@ export default function App() {
     () => sessionStorage.getItem('dashCalibrationPassed') === 'true',
   );
   const [screen, setScreen] = useState<'home' | 'waiting' | 'game' | 'result'>('home');
+  const [notice, setNotice] = useState<NoticeData | null>(null);
   const [gameConfig, setGameConfig]   = useState<GameConfig | null>(null);
   const [resultData, setResultData]   = useState<ResultData | null>(null);
   const socketRef = useRef<Socket | null>(null);
@@ -132,8 +134,17 @@ export default function App() {
     if (firebaseUser) { try { idToken = await firebaseUser.getIdToken(); } catch { /* no-op */ } }
     sock.emit('dash:queue', { name, color, stakeId, idToken }, (res: any) => {
       if (res && !res.ok) {
-        if (res.error === 'insufficient_balance') alert('Not enough PC for this tier. Add PC from your account page.');
-        else if (res.error === 'auth_required') alert('Please log in to play paid lobbies.');
+        if (res.error === 'insufficient_balance') setNotice({
+          title: 'Not enough Paigon Credits',
+          body: 'This lobby costs more PC than you have. Add credits from your account page to join.',
+          tone: 'warn',
+          action: { label: 'Add PC', href: '/account.html' },
+        });
+        else if (res.error === 'auth_required') setNotice({
+          title: 'Sign in required',
+          body: 'Paid lobbies need a signed-in account so winnings can be credited to you.',
+          tone: 'info',
+        });
         setScreen('home');
       }
     });
@@ -144,7 +155,11 @@ export default function App() {
 
   async function handleSolo(name: string, color: string) {
     const allowed = await consumeSoloRun();
-    if (!allowed) { alert(`You've used all ${SOLO_DAILY_LIMIT} solo practice runs for today. Come back tomorrow!`); return; }
+    if (!allowed) { setNotice({
+        title: 'Daily practice limit reached',
+        body: `You have used all ${SOLO_DAILY_LIMIT} solo runs for today. Come back tomorrow, or jump into a free competitive match right now.`,
+        tone: 'info',
+      }); return; }
     setPlayerName(name); setPlayerColor(color);
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     const code = Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
@@ -237,6 +252,8 @@ export default function App() {
       {showDeposit && firebaseUser && (
         <DepositModal user={firebaseUser} onClose={() => setShowDeposit(false)} onSuccess={(creditCents) => { if (creditCents > 0) setBalance(b => b + creditCents); }} />
       )}
+
+      {notice && <Notice notice={notice} onClose={() => setNotice(null)} />}
     </div>
   );
 }

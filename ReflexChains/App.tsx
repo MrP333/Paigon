@@ -5,6 +5,7 @@ import { doc, getDoc, setDoc, addDoc, collection, serverTimestamp } from 'fireba
 import { auth, db } from './services/firebase';
 import { identifyUser, track } from './services/analytics';
 import CalibrationGate from './components/CalibrationGate';
+import Notice, { NoticeData } from './components/Notice';
 import HomeScreen from './components/HomeScreen';
 import WaitingScreen from './components/WaitingScreen';
 import GameScreen from './components/GameScreen';
@@ -21,6 +22,7 @@ export default function App() {
     () => sessionStorage.getItem('calibrationPassed') === 'true',
   );
   const [screen, setScreen] = useState<'home' | 'waiting' | 'game' | 'trial' | 'result'>('home');
+  const [notice, setNotice] = useState<NoticeData | null>(null);
   const [gameConfig, setGameConfig] = useState<GameConfig | null>(null);
   const [resultData, setResultData] = useState<ResultData | null>(null);
   const socketRef = useRef<Socket | null>(null);
@@ -169,9 +171,18 @@ export default function App() {
     sock.emit('reflex:queue', { name, color, stakeId, idToken }, (res: any) => {
       if (res && !res.ok) {
         if (res.error === 'insufficient_balance') {
-          alert('Not enough PC for this tier. Add PC from your account page.');
+          setNotice({
+          title: 'Not enough Paigon Credits',
+          body: 'This lobby costs more PC than you have. Add credits from your account page to join.',
+          tone: 'warn',
+          action: { label: 'Add PC', href: '/account.html' },
+        });
         } else if (res.error === 'auth_required') {
-          alert('Please log in to play paid lobbies.');
+          setNotice({
+          title: 'Sign in required',
+          body: 'Paid lobbies need a signed-in account so winnings can be credited to you.',
+          tone: 'info',
+        });
         }
         setScreen('home');
       }
@@ -192,7 +203,11 @@ export default function App() {
   async function handleSolo(name: string, color: string) {
     const allowed = await consumeSoloRun();
     if (!allowed) {
-      alert(`You've used all ${SOLO_DAILY_LIMIT} solo practice runs for today. Come back tomorrow, or play a free competitive match!`);
+      setNotice({
+        title: 'Daily practice limit reached',
+        body: `You have used all ${SOLO_DAILY_LIMIT} solo runs for today. Come back tomorrow, or jump into a free competitive match right now.`,
+        tone: 'info',
+      });
       return;
     }
     setPlayerName(name);
@@ -341,6 +356,8 @@ export default function App() {
           <button onClick={() => setTournamentBanner(null)} style={{ marginLeft: 16, background: 'none', border: 'none', color: 'rgba(34,211,238,0.5)', cursor: 'pointer', fontSize: '0.85rem' }}>✕</button>
         </div>
       )}
+
+      {notice && <Notice notice={notice} onClose={() => setNotice(null)} />}
     </div>
   );
 }
