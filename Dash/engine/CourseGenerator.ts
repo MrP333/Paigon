@@ -65,6 +65,7 @@ export interface GeneratedCourse {
 const FINISH_Z           = 490;
 const NORMAL_TRACK_WIDTH = 12;
 const BEAM_X_RANGE       = 2.5;
+const CHECKPOINT_COUNT   = 4;
 
 const REGULAR_TYPES: ObstacleType[] = ['moving_wall', 'rotating_barrier', 'spinning_beam'];
 
@@ -179,10 +180,12 @@ export function generateCourse(roomCode: string): GeneratedCourse {
   if (cursor < FINISH_Z + 20) sections.push({ zStart: cursor, zEnd: FINISH_Z + 20, width: NORMAL_TRACK_WIDTH });
 
   // ── Checkpoints ────────────────────────────────────────────────────────────
-  const checkpoints: Checkpoint[] = [
-    { z: 0,           index: 0 },
-    { z: checkpointZ, index: 1 },
-  ];
+  // Evenly spaced so a late fall costs ~1/5 of the course rather than half of it.
+  // Derived without rng() so course layout stays identical for a given seed.
+  const checkpoints: Checkpoint[] = [{ z: 0, index: 0 }];
+  for (let i = 1; i <= CHECKPOINT_COUNT; i++) {
+    checkpoints.push({ z: Math.round((FINISH_Z * i) / (CHECKPOINT_COUNT + 1)), index: i });
+  }
 
   return { sections, obstacles, checkpoints, finishZ: FINISH_Z, totalLength: FINISH_Z };
 }

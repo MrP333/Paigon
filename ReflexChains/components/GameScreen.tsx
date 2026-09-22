@@ -8,7 +8,7 @@ const CH               = 540;
 const NUM_TARGETS      = 150;
 const GAME_DURATION_MS = 30000;
 const TARGET_R         = 32;
-const CHARGE_MS        = 100;
+const CHARGE_MS        = 100;  // must match REFLEX_CHARGE_MS on the server
 const START_RING_MS    = 1500; // slow at game start
 const END_RING_MS      = 800;  // fast by game end
 const SLOT_COUNT       = 2;
@@ -409,6 +409,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
       setStreak(0);
       multiplierRef.current = 1;
       setMultiplier(1);
+      if (!config.solo) socket.emit('reflex:break', { roomCode: config.roomCode });
       if (prevStreak >= 3) {
         setChainBroken(Date.now());
         flashRef.current = { startTime: Date.now(), color: '#ef4444', alpha: 0.18, duration: 250 };
@@ -557,6 +558,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
       // Miss on empty canvas
       streakRef.current = 0; setStreak(0);
       multiplierRef.current = 1; setMultiplier(1);
+      if (!config.solo) socket.emit('reflex:break', { roomCode: config.roomCode });
       effectsRef.current.push({ x: cx, y: cy, type: 'miss', startTime: now });
       return;
     }
@@ -580,6 +582,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
       const prevStreak = streakRef.current;
       streakRef.current = 0; setStreak(0);
       multiplierRef.current = 1; setMultiplier(1);
+      if (!config.solo) socket.emit('reflex:break', { roomCode: config.roomCode });
       if (prevStreak >= 3) setChainBroken(now);
       effectsRef.current.push({ x: t.x, y: t.y, type: 'decoy', startTime: now });
       flashRef.current = { startTime: now, color: '#ef4444', alpha: 0.22, duration: 200 };
