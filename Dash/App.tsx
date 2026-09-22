@@ -12,6 +12,7 @@ import GameScreen from './components/GameScreen';
 import ResultScreen from './components/ResultScreen';
 import DepositModal from './components/DepositModal';
 import { GameConfig, ResultData } from './types';
+import { useShellBridge } from './services/shellBridge';
 
 const SERVER_URL = 'https://mazergame11-production.up.railway.app';
 const SOLO_DAILY_LIMIT = 5;
@@ -205,6 +206,13 @@ export default function App() {
   }
 
   function handlePlayAgain() { setResultData(null); setGameConfig(null); setScreen('home'); }
+
+  // The site overlay closed → drop back to the home screen (and leave the
+  // queue cleanly if we were still waiting), so reopening starts fresh.
+  useShellBridge(screen, () => {
+    if (screen === 'waiting') handleLeave();
+    handlePlayAgain();
+  });
 
   if (!calibrated) {
     return (
