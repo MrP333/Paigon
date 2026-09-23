@@ -130,8 +130,6 @@ export default function GameScreen({ config, socket, onResult }: Props) {
   const finishedRef      = useRef(false);
   const startTimeRef     = useRef(0);
   const keystampsRef     = useRef<number[]>([]);
-  const errorStartRef    = useRef<number | null>(null); // when we entered error state
-  const totalErrorTimeRef = useRef(0);                  // cumulative ms spent in error state
   const passageBoxRef    = useRef<HTMLDivElement>(null);
 
   // State for display
@@ -177,12 +175,11 @@ export default function GameScreen({ config, socket, onResult }: Props) {
   useEffect(() => {
     if (!gameStarted || finished) return;
     const iv = setInterval(() => {
+      // Raw elapsed, not error-adjusted: the match is decided on wall-clock
+      // finish time, so a WPM that quietly discounts time spent correcting
+      // mistakes showed players a number that did not decide anything.
       const elapsed = Date.now() - startTimeRef.current;
-      if (elapsed > 0) {
-        const ongoingErr = errorStartRef.current ? Date.now() - errorStartRef.current : 0;
-        const effectiveMs = Math.max(1, elapsed - totalErrorTimeRef.current - ongoingErr);
-        setLiveWpm(calcWpm(currentPosRef.current, effectiveMs));
-      }
+      if (elapsed > 0) setLiveWpm(calcWpm(currentPosRef.current, elapsed));
     }, 400);
     return () => clearInterval(iv);
   }, [gameStarted, finished]);
@@ -247,22 +244,20 @@ export default function GameScreen({ config, socket, onResult }: Props) {
       if (finishedRef.current) return;
       if (IGNORE.has(e.key)) return;
 
-      // Keystroke rate limit (>15/second = bot)
+      // Anti-bot keystroke ceiling. 15/s was 180 WPM, inside real human range,
+      // so the fastest typists had input silently dropped while the server
+      // accepted results up to 220 WPM. 24/s is ~288 WPM: clear of any human
+      // and still far below scripted input.
       const now = Date.now();
       keystampsRef.current = keystampsRef.current.filter(t => now - t < 1000);
       keystampsRef.current.push(now);
-      if (keystampsRef.current.length > 15) return;
+      if (keystampsRef.current.length > 24) return;
 
       if (e.key === 'Backspace') {
         e.preventDefault();
         if (errorDepthRef.current > 0) {
           errorDepthRef.current--;
           setDisplayErrorDepth(errorDepthRef.current);
-          // If all errors cleared, record the time spent in error state
-          if (errorDepthRef.current === 0 && errorStartRef.current !== null) {
-            totalErrorTimeRef.current += Date.now() - errorStartRef.current;
-            errorStartRef.current = null;
-          }
         }
         return;
       }
@@ -297,11 +292,9 @@ export default function GameScreen({ config, socket, onResult }: Props) {
 
         if (newPos === passage.length) {
           const totalMs = Date.now() - startTimeRef.current;
-          const ongoingErr = errorStartRef.current ? Date.now() - errorStartRef.current : 0;
-          const effectiveMs = Math.max(1, totalMs - totalErrorTimeRef.current - ongoingErr);
           finishedRef.current = true;
           setFinished(true);
-          const finalWpm = calcWpm(newPos, effectiveMs);
+          const finalWpm = calcWpm(newPos, Math.max(1, totalMs));
           const accuracy = totalErrorsRef.current > 0
             ? Math.round(newPos / (newPos + totalErrorsRef.current) * 100)
             : 100;
@@ -336,9 +329,6 @@ export default function GameScreen({ config, socket, onResult }: Props) {
         // Wrong character — enter error state
         errorDepthRef.current = 1;
         totalErrorsRef.current++;
-        if (errorStartRef.current === null) {
-          errorStartRef.current = Date.now();
-        }
         setDisplayErrorDepth(1);
         triggerShake();
       }
