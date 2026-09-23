@@ -1,14 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
 
-type StepId = 'w' | 'space' | 'mouse';
+type StepId = 'w' | 'space' | 'steer';
 
 const STEPS: { id: StepId; label: string; instruction: string }[] = [
-  { id: 'w',     label: 'Movement', instruction: 'Press W to move forward'       },
+  { id: 'w',     label: 'Movement', instruction: 'Press W or Up to move forward' },
   { id: 'space', label: 'Jump',     instruction: 'Press Space to jump'            },
-  { id: 'mouse', label: 'Look',     instruction: 'Move your mouse to look around' },
+  { id: 'steer', label: 'Steering', instruction: 'Press A or D to steer'          },
 ];
 
-const MOUSE_THRESHOLD = 50;
 const RAINBOW = 'linear-gradient(135deg,#ff0080,#ff6600,#ffd700,#00ff88,#00ccff,#8844ff,#ff0080)';
 
 const CSS = `
@@ -56,30 +55,6 @@ function KeyCap({ label, wide }: { label: string; wide?: boolean }) {
   );
 }
 
-function MouseGlyph({ pct }: { pct: number }) {
-  const filled = 2 + 40 * (1 - pct / 100);
-  return (
-    <div style={{ width: 30, height: 42, flexShrink: 0, position: 'relative' }}>
-      <svg width="30" height="42" viewBox="0 0 30 42" fill="none">
-        <rect x="1.5" y="1.5" width="27" height="39" rx="13.5"
-          stroke="rgba(255,255,255,0.25)" strokeWidth="1.5"
-          fill="rgba(255,255,255,0.04)" />
-        {pct > 0 && (
-          <clipPath id="mfill">
-            <rect x="0" y={filled} width="30" height={42 - filled} />
-          </clipPath>
-        )}
-        {pct > 0 && (
-          <rect x="1.5" y="1.5" width="27" height="39" rx="13.5"
-            fill="rgba(0,255,136,0.18)" clipPath="url(#mfill)" />
-        )}
-        <rect x="13" y="9" width="4" height="12" rx="2"
-          fill={pct > 10 ? `rgba(0,255,136,${0.3 + pct / 100 * 0.6})` : 'rgba(255,255,255,0.14)'} />
-      </svg>
-    </div>
-  );
-}
-
 export default function CalibrationGate({ onComplete }: { onComplete: () => void }) {
   const [stepIdx,   setStepIdx]   = useState(0);
   const [checked,   setChecked]   = useState<Set<StepId>>(new Set());
@@ -87,11 +62,9 @@ export default function CalibrationGate({ onComplete }: { onComplete: () => void
   const [showReady, setShowReady] = useState(false);
   const [fadingOut, setFadingOut] = useState(false);
   const [showNudge, setShowNudge] = useState(false);
-  const [mousePct,  setMousePct]  = useState(0);
 
   const firedRef  = useRef(false);
   const nudgeRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const mouseAcc  = useRef(0);
   const advanceRef = useRef<() => void>(() => {});
 
   function clearNudge() {
@@ -119,15 +92,15 @@ export default function CalibrationGate({ onComplete }: { onComplete: () => void
 
   useEffect(() => {
     firedRef.current = false;
-    mouseAcc.current = 0;
-    setMousePct(0);
     clearNudge();
     nudgeRef.current = setTimeout(() => setShowNudge(true), 5000);
 
     const step = STEPS[stepIdx].id;
 
     if (step === 'w') {
-      const fn = (e: KeyboardEvent) => { if (e.code === 'KeyW') advanceRef.current(); };
+      const fn = (e: KeyboardEvent) => {
+        if (e.code === 'KeyW' || e.code === 'ArrowUp') advanceRef.current();
+      };
       window.addEventListener('keydown', fn);
       return () => { window.removeEventListener('keydown', fn); clearNudge(); };
     }
@@ -140,14 +113,12 @@ export default function CalibrationGate({ onComplete }: { onComplete: () => void
       return () => { window.removeEventListener('keydown', fn); clearNudge(); };
     }
 
-    if (step === 'mouse') {
-      const fn = (e: MouseEvent) => {
-        mouseAcc.current += Math.abs(e.movementX) + Math.abs(e.movementY);
-        setMousePct(Math.min(100, (mouseAcc.current / MOUSE_THRESHOLD) * 100));
-        if (mouseAcc.current >= MOUSE_THRESHOLD) advanceRef.current();
+    if (step === 'steer') {
+      const fn = (e: KeyboardEvent) => {
+        if (['KeyA', 'KeyD', 'ArrowLeft', 'ArrowRight'].includes(e.code)) advanceRef.current();
       };
-      window.addEventListener('mousemove', fn);
-      return () => { window.removeEventListener('mousemove', fn); clearNudge(); };
+      window.addEventListener('keydown', fn);
+      return () => { window.removeEventListener('keydown', fn); clearNudge(); };
     }
 
     return () => clearNudge();
@@ -236,9 +207,10 @@ export default function CalibrationGate({ onComplete }: { onComplete: () => void
                     </svg>
                   </div>
                 ) : isActive ? (
-                  step.id === 'mouse'
-                    ? <MouseGlyph pct={mousePct} />
-                    : <KeyCap label={step.id === 'w' ? 'W' : 'SPACE'} wide={step.id === 'space'} />
+                  <KeyCap
+                    label={step.id === 'w' ? 'W' : step.id === 'space' ? 'SPACE' : 'A / D'}
+                    wide={step.id !== 'w'}
+                  />
                 ) : (
                   <div style={{ width: 34, height: 34, borderRadius: '50%', border: '1.5px solid rgba(255,255,255,0.13)', flexShrink: 0 }} />
                 )}
@@ -265,22 +237,10 @@ export default function CalibrationGate({ onComplete }: { onComplete: () => void
             );
           })}
 
-          {/* Mouse progress bar */}
-          {stepIdx === 2 && !allDone && (
-            <div style={{ height: 4, background: 'rgba(255,255,255,0.07)', borderRadius: 4, overflow: 'hidden', marginTop: 2 }}>
-              <div style={{
-                height: '100%', width: `${mousePct}%`,
-                background: RAINBOW, backgroundSize: '250% 100%',
-                animation: 'dg-rainbow 1.5s linear infinite',
-                borderRadius: 4, transition: 'width 0.1s',
-              }} />
-            </div>
-          )}
-
           {/* 5s nudge */}
           {showNudge && (
             <div style={{ textAlign: 'center', marginTop: 6, fontSize: '0.73rem', fontWeight: 600, color: 'rgba(255,255,255,0.3)', letterSpacing: '0.04em', animation: 'dg-nudge-in 0.3s ease-out' }}>
-              {stepIdx === 2 ? 'Keep moving your mouse to continue' : `Still here — ${STEPS[stepIdx].instruction.toLowerCase()}`}
+              {`Still here — ${STEPS[stepIdx].instruction.toLowerCase()}`}
             </div>
           )}
         </div>
