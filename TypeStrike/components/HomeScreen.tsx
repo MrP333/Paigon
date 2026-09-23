@@ -125,7 +125,7 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
       ))}
 
       {/* Back link */}
-      <a href="/" target="_top" style={{ position: 'absolute', top: 18, left: 20, zIndex: 2, fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'rgba(255,255,255,.3)', textDecoration: 'none', fontFamily: 'inherit', transition: 'color .15s' }}
+      <a href="/" target="_top" style={{ position: 'absolute', top: 56, left: 20, zIndex: 2, fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'rgba(255,255,255,.3)', textDecoration: 'none', fontFamily: 'inherit', transition: 'color .15s' }}
         onMouseOver={e => (e.currentTarget.style.color = 'rgba(255,255,255,.65)')}
         onMouseOut={e  => (e.currentTarget.style.color = 'rgba(255,255,255,.3)')}>
         ← Paigon
@@ -133,7 +133,7 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
 
       {/* Top bar */}
       {isLoggedIn && (
-        <div style={{ position: 'absolute', top: 18, right: 20, display: 'flex', alignItems: 'center', gap: 10, zIndex: 2 }}>
+        <div style={{ position: 'absolute', top: 56, right: 20, display: 'flex', alignItems: 'center', gap: 10, zIndex: 2 }}>
           <div style={{ display: 'inline-flex', alignItems: 'center', background: 'rgba(0,255,136,.08)', borderRadius: 999, padding: '4px 12px', color: '#00ff88', fontSize: '0.7rem', fontWeight: 800, letterSpacing: '0.04em', fontFamily: 'inherit', border: '1px solid rgba(0,255,136,.3)', animation: 'balance-border 4s ease-in-out infinite' }}>
             {Math.floor(balance / 10)} PC
           </div>

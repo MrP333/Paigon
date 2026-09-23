@@ -386,15 +386,8 @@ export default function GameScreen({ config, socket, onResult }: Props) {
         <div style={{ position: 'absolute', bottom: '15%', right: '10%', width: 400, height: 400, borderRadius: '50%', background: 'radial-gradient(circle, rgba(34,211,238,.05) 0%, transparent 70%)', filter: 'blur(60px)', animation: 'ts-blob-b 17s ease-in-out infinite' }} />
       </div>
 
-      {/* ── Back link ── */}
-      <a href="/" target="_top" style={{ position: 'absolute', top: 18, left: 20, zIndex: 10, fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'rgba(255,255,255,.25)', textDecoration: 'none', fontFamily: 'inherit' }}
-        onMouseOver={e => (e.currentTarget.style.color = 'rgba(255,255,255,.55)')}
-        onMouseOut={e  => (e.currentTarget.style.color = 'rgba(255,255,255,.25)')}>
-        ← Paigon
-      </a>
-
       {/* ── Stats bar ── */}
-      <div style={{ position: 'absolute', top: 16, right: 20, display: 'flex', gap: 16, zIndex: 10, alignItems: 'center' }}>
+      <div style={{ position: 'absolute', top: 56, right: 20, display: 'flex', gap: 16, zIndex: 10, alignItems: 'center' }}>
         <div style={{ fontSize: '0.78rem', fontWeight: 800, color: '#00ff88', letterSpacing: '0.04em' }}>
           {liveWpm} <span style={{ fontWeight: 600, color: 'rgba(255,255,255,.35)', fontSize: '0.65rem' }}>WPM</span>
         </div>

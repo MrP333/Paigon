@@ -72,7 +72,7 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
     }}>
 
       <a href="/" target="_top" style={{
-        position: 'absolute', top: 18, left: 20, zIndex: 2,
+        position: 'absolute', top: 56, left: 20, zIndex: 2,
         fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase',
         color: 'rgba(255,255,255,0.28)', textDecoration: 'none', fontFamily: 'inherit',
         transition: 'color 0.15s',
@@ -82,7 +82,7 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
       >← Paigon</a>
 
       {isLoggedIn && (
-        <div style={{ position: 'absolute', top: 18, right: 20, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ position: 'absolute', top: 56, right: 20, display: 'flex', alignItems: 'center', gap: 10 }}>
           <a href="/account.html" style={{
             display: 'inline-flex', alignItems: 'center',
             background: 'rgba(0,255,136,0.08)', border: '1px solid rgba(0,255,136,0.22)',
