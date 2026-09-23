@@ -25,6 +25,8 @@ import {
 import { Socket } from 'socket.io-client';
 import { GameConfig, ResultData } from '../types';
 import { generateCourse, getTrackWidth, getTrackCenter, GeneratedCourse, CourseObstacle } from '../engine/CourseGenerator';
+import { Sounds } from '../services/sounds';
+import MuteButton from './MuteButton';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -620,7 +622,7 @@ function PhysicsLoop({
 
     // ── Jump ──────────────────────────────────────────────────────────────────
     if (keysRef.current['Space'] && p.onGround && !p.jumpPressed) {
-      p.vel.y = JUMP_VEL; p.onGround = false; p.jumpPressed = true;
+      p.vel.y = JUMP_VEL; p.onGround = false; p.jumpPressed = true; Sounds.jump();
     }
     if (!keysRef.current['Space']) p.jumpPressed = false;
 
@@ -641,13 +643,14 @@ function PhysicsLoop({
 
     // ── Fall detection ────────────────────────────────────────────────────────
     if (!p.isFalling && np.y < FALL_Y) {
-      p.isFalling = true; p.fallStartMs = now; p.vel.set(0, 0, 0);
+      p.isFalling = true; p.fallStartMs = now; p.vel.set(0, 0, 0); Sounds.fall();
       fallStateRef.current = 'falling'; p.pos.copy(np);
       onTick(p.pos.clone(), p.checkpoint, RESPAWN_MS); return;
     }
 
     // ── Obstacle effects ──────────────────────────────────────────────────────
     const hitOccurred = applyObstacleEffects(course, np, p.vel, raceTime);
+    if (hitOccurred) Sounds.obstacleHit();
     if (hitOccurred && (now - p.lastKnockMs) > KNOCK_CD_MS) {
       hitTimeRef.current = now; p.lastKnockMs = now;
     }
@@ -657,6 +660,7 @@ function PhysicsLoop({
     for (const cp of course.checkpoints) {
       if (np.z >= cp.z && cp.index > p.checkpoint) {
         p.checkpoint = cp.index;
+        Sounds.checkpoint();
         checkpointBurstRef.current = {
           pos: new Vector3(np.x, np.y + 0.8, np.z),
           color: CP_COLORS[(cp.index - 1) % CP_COLORS.length],
@@ -794,10 +798,10 @@ export default function GameScreen({ config, socket, onResult }: Props) {
     let n = 3; setCountdown(3);
     const tick = setInterval(() => {
       n--;
-      if (n > 0) setCountdown(n);
+      if (n > 0) { setCountdown(n); Sounds.tick(); }
       else if (n === 0) setCountdown('GO!');
       else {
-        clearInterval(tick); setPhase('racing');
+        clearInterval(tick); Sounds.go(); setPhase('racing');
         raceActiveRef.current = true;
         physRef.current.startTime = Date.now();
         physRef.current.lastSyncTime = 0;
@@ -894,6 +898,8 @@ export default function GameScreen({ config, socket, onResult }: Props) {
           </div>
         </div>
       )}
+
+      <MuteButton accent="#fb923c" />
     </div>
   );
 }

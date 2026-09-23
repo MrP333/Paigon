@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useMemo, useCallback, type MouseEvent } from 'react';
 import { Socket } from 'socket.io-client';
 import { GameConfig, ResultData, Target, HitRecord, CanvasEffect } from '../types';
+import { Sounds } from '../services/sounds';
+import MuteButton from './MuteButton';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const CW               = 900;
@@ -458,6 +460,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
       multiplierRef.current = 1;
       setMultiplier(1);
       if (!config.solo) socket.emit('reflex:break', { roomCode: config.roomCode });
+      Sounds.chainBreak();
       if (prevStreak >= 3) {
         setChainBroken(Date.now());
         flashRef.current = { startTime: Date.now(), color: '#ef4444', alpha: 0.18, duration: 250 };
@@ -511,9 +514,11 @@ export default function GameScreen({ config, socket, onResult }: Props) {
           activeSlotsRef.current.push(createSlot(i, now));
         }
         poolIdxRef.current = SLOT_COUNT;
+        Sounds.go();
         setPhase('playing');
         phaseRef.current = 'playing';
       } else {
+        Sounds.tick();
         setCountdown(n);
       }
     }, 1000);
@@ -579,6 +584,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
     for (const s of activeSlotsRef.current) clearTimeout(s.timeoutId);
     activeSlotsRef.current = [];
 
+    Sounds.finish();
     const score = scoreRef.current;
     myFinalScoreRef.current  = score;
     myFinalTimeRef.current   = GAME_DURATION_MS;
@@ -616,6 +622,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
       streakRef.current = 0; setStreak(0);
       multiplierRef.current = 1; setMultiplier(1);
       if (!config.solo) socket.emit('reflex:break', { roomCode: config.roomCode });
+      Sounds.miss();
       effectsRef.current.push({ x: cx, y: cy, type: 'miss', startTime: now });
       return;
     }
@@ -640,6 +647,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
       streakRef.current = 0; setStreak(0);
       multiplierRef.current = 1; setMultiplier(1);
       if (!config.solo) socket.emit('reflex:break', { roomCode: config.roomCode });
+      Sounds.chainBreak();
       if (prevStreak >= 3) setChainBroken(now);
       effectsRef.current.push({ x: t.x, y: t.y, type: 'decoy', startTime: now });
       flashRef.current = { startTime: now, color: '#ef4444', alpha: 0.22, duration: 200 };
@@ -654,7 +662,8 @@ export default function GameScreen({ config, socket, onResult }: Props) {
     const mult = getMultiplier(streakRef.current);
     const prevMult = multiplierRef.current;
     multiplierRef.current = mult;
-    if (mult !== prevMult) setMultiplier(mult);
+    Sounds.hit(streakRef.current);
+    if (mult !== prevMult) { setMultiplier(mult); Sounds.streakUp(); }
 
     const rawPts = calcPoints(elapsed - CHARGE_MS, bestSlot.ringMs);
     const pts    = Math.round(rawPts * mult);
@@ -984,6 +993,8 @@ export default function GameScreen({ config, socket, onResult }: Props) {
           72%     { transform: translateX(3px); }
         }
       `}</style>
+
+      <MuteButton accent="#22d3ee" />
     </div>
   );
 }

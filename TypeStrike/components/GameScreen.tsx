@@ -1,6 +1,8 @@
 import { useRef, useState, useEffect, useMemo } from 'react';
 import { Socket } from 'socket.io-client';
 import { GameConfig, ResultData } from '../types';
+import { Sounds } from '../services/sounds';
+import MuteButton from './MuteButton';
 
 // ── Passage library ────────────────────────────────────────────────────────────
 
@@ -257,6 +259,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
         e.preventDefault();
         if (errorDepthRef.current > 0) {
           errorDepthRef.current--;
+          if (errorDepthRef.current === 0) Sounds.clear();
           setDisplayErrorDepth(errorDepthRef.current);
         }
         return;
@@ -272,6 +275,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
         if (curPos + errDepth < passage.length) {
           errorDepthRef.current++;
           totalErrorsRef.current++;
+          Sounds.error();
           setDisplayErrorDepth(errorDepthRef.current);
         }
         triggerShake();
@@ -283,6 +287,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
 
       if (e.key === passage[curPos]) {
         const newPos = curPos + 1;
+        Sounds.key();
         currentPosRef.current = newPos;
         setDisplayPos(newPos);
 
@@ -293,6 +298,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
         if (newPos === passage.length) {
           const totalMs = Date.now() - startTimeRef.current;
           finishedRef.current = true;
+          Sounds.finish();
           setFinished(true);
           const finalWpm = calcWpm(newPos, Math.max(1, totalMs));
           const accuracy = totalErrorsRef.current > 0
@@ -329,6 +335,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
         // Wrong character — enter error state
         errorDepthRef.current = 1;
         totalErrorsRef.current++;
+        Sounds.error();
         setDisplayErrorDepth(1);
         triggerShake();
       }
@@ -540,6 +547,8 @@ export default function GameScreen({ config, socket, onResult }: Props) {
           </div>
         </div>
       )}
+
+      <MuteButton accent="#00ff88" />
     </div>
   );
 }

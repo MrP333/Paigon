@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, useMemo, useCallback, CSSProperties } from 'react';
 import { Socket } from 'socket.io-client';
+import { Sounds } from '../services/sounds';
+import MuteButton from './MuteButton';
 import { GameConfig, ResultData } from '../types';
 
 const GAME_DURATION_S = 30;
@@ -305,6 +307,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
     wrongCountInSet.current = 0;
     setStartRef.current = Date.now();
     setArmTimeRef.current = Date.now() + ARM_DELAY_MS;
+    Sounds.go();
     setPhase('playing');
     phaseRef.current = 'playing';
   }
@@ -338,6 +341,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
         setShowGo(true);
         setTimeout(() => { setShowGo(false); startGame(); }, 900);
       } else {
+        Sounds.tick();
         setCountdown(n);
       }
     }, 1000);
@@ -393,6 +397,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
     if (!isCorrect) {
       // Wrong answer
       wrongCountInSet.current += 1;
+      Sounds.wrong();
       const lockDuration = LOCKOUT_MS[Math.min(wrongCountInSet.current - 1, LOCKOUT_MS.length - 1)];
 
       setWrongCard(cardIdx);
@@ -431,6 +436,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
     clearTimers();
     const reactionMs = Date.now() - setStartRef.current;
     correctCountRef.current += 1;
+    Sounds.correct(correctCountRef.current);
     totalReactionMsRef.current += reactionMs;
     setCorrectCount(correctCountRef.current);
     setCorrectCard(cardIdx);
@@ -484,6 +490,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
       setPhase('waiting');
       phaseRef.current = 'waiting';
       setPhase('waiting');
+      Sounds.finish();
       socket.emit('odd:finish', { roomCode: config.roomCode, correct: myCorrect, attempted: myAttempted, totalMs: myTotalMs });
     }
   }
@@ -772,6 +779,8 @@ export default function GameScreen({ config, socket, onResult }: Props) {
           </div>
         )}
       </div>
+
+      <MuteButton accent="#a855f7" />
     </div>
   );
 }
