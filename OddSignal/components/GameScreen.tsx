@@ -85,8 +85,16 @@ interface SetConfig {
 const TIER2_FROM = 7;
 const TIER3_FROM = 15;
 
-function generateSet(roomCode: string, setIdx: number): SetConfig {
-  const rng = mulberry32(hashCode(roomCode + ':set:' + setIdx));
+// The seed comes from the server, one round ahead, rather than being derived
+// from the room code. The bundle can no longer compute future rounds because it
+// has not been given their seeds yet. Solo and trial runs have no server lobby,
+// so they derive locally — there is nothing at stake to protect there.
+function localSeed(roomCode: string, setIdx: number): string {
+  return roomCode + ':set:' + setIdx;
+}
+
+function generateSet(seed: string, setIdx: number): SetConfig {
+  const rng = mulberry32(hashCode(seed));
 
   // Layer 4: oddIdx is the FIRST rng call — server mirrors this to validate
   const oddIdx = Math.floor(rng() * 6);
@@ -257,6 +265,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
   const containerRef      = useRef<HTMLDivElement>(null);
   const phaseRef          = useRef<string>('countdown');
   const setIdxRef         = useRef(0);
+  const seedsRef          = useRef<Record<number, string>>({});
   const setArmTimeRef     = useRef(0);
   const wrongCountInSet   = useRef(0);
   const correctCountRef   = useRef(0);
@@ -286,7 +295,8 @@ export default function GameScreen({ config, socket, onResult }: Props) {
   }
 
   function loadSet(idx: number) {
-    const set = generateSet(config.roomCode, idx);
+    const seed = seedsRef.current[idx] ?? localSeed(config.roomCode, idx);
+    const set = generateSet(seed, idx);
     setIdxRef.current = idx;
     setSetIdx(idx);
     setCurrentSet(set);
@@ -337,6 +347,15 @@ export default function GameScreen({ config, socket, onResult }: Props) {
   // ── Socket ──────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (config.solo) return;
+    socket.on('odd:seeds', ({ seeds }: { seeds: Record<number, string> }) => {
+      seedsRef.current = { ...seedsRef.current, ...seeds };
+    });
+
+    // Announce that this build understands seeds, which makes the server switch
+    // from room-code derivation to releasing them a round at a time. Sent during
+    // the countdown, so the opening seeds are in hand well before the first set.
+    socket.emit('odd:ready', { roomCode: config.roomCode });
+
     socket.on('odd:opponent-round', ({ correct }: { correct: boolean }) => {
       if (correct) setOpponentCorrect(c => c + 1);
     });
