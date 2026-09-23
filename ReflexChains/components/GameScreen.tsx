@@ -95,22 +95,28 @@ function spawnScale(elapsed: number): number {
 }
 
 // ── Target pool generation ────────────────────────────────────────────────────
-function generateTargets(roomCode: string): Target[] {
-  const rng = mulberry32(hashCode(roomCode));
-  const PAD = 80;
-  const targets: Target[] = [];
-  for (let i = 0; i < NUM_TARGETS; i++) {
-    let x = 0, y = 0, tries = 0;
-    do {
-      x = PAD + rng() * (CW - PAD * 2);
-      y = PAD + rng() * (CH - PAD * 2);
-      tries++;
-    } while (tries < 60 && targets.some(t => Math.hypot(t.x - x, t.y - y) < 120));
-    rng(); // consumed to keep isDecoy seed position stable
-    const isDecoy = rng() < DECOY_RATE;
-    targets.push({ x, y, index: i, ringMs: 0, isDecoy }); // ringMs set per-slot at spawn time
-  }
-  return targets;
+// Each target is derived from its own server-issued seed rather than from one
+// room-code stream, so the client can only build the targets it has been given.
+// Spacing is still checked against the targets already placed, which are the
+// ones already revealed, so layout quality is unchanged.
+const PAD = 80;
+
+function makeTarget(seed: string, index: number, placed: Target[]): Target {
+  const rng = mulberry32(hashCode(seed));
+  let x = 0, y = 0, tries = 0;
+  do {
+    x = PAD + rng() * (CW - PAD * 2);
+    y = PAD + rng() * (CH - PAD * 2);
+    tries++;
+  } while (tries < 60 && placed.some(t => Math.hypot(t.x - x, t.y - y) < 120));
+  rng(); // consumed to keep isDecoy seed position stable
+  const isDecoy = rng() < DECOY_RATE;
+  return { x, y, index, ringMs: 0, isDecoy }; // ringMs set per-slot at spawn time
+}
+
+/** Solo and trial runs have no server lobby, so they derive locally. */
+function localTargetSeed(roomCode: string, index: number): string {
+  return roomCode + ':target:' + index;
 }
 
 // ── Background ────────────────────────────────────────────────────────────────
@@ -379,7 +385,19 @@ export default function GameScreen({ config, socket, onResult }: Props) {
   const poolIdxRef         = useRef(0);         // next index from the 150-target pool
   const realSlotCounterRef = useRef(0);         // sequential number for real targets
 
-  const targets = useMemo(() => generateTargets(config.roomCode), [config.roomCode]);
+  // Grows as seeds arrive. targetAt() builds a target on first use and caches it,
+  // so a given index is always the same object for the whole round.
+  const seedsRef   = useRef<Record<number, string>>({});
+  const targetsRef = useRef<Target[]>([]);
+
+  const targetAt = useCallback((index: number): Target => {
+    const cached = targetsRef.current[index];
+    if (cached) return cached;
+    const seed = seedsRef.current[index] ?? localTargetSeed(config.roomCode, index);
+    const built = makeTarget(seed, index, targetsRef.current.filter(Boolean));
+    targetsRef.current[index] = built;
+    return built;
+  }, [config.roomCode]);
 
   useEffect(() => { phaseRef.current = phase; }, [phase]);
 
@@ -399,7 +417,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
     const idx   = slots.findIndex(s => s.poolIdx === poolIdx);
     if (idx === -1) return;
     slots.splice(idx, 1);
-    const t = targets[poolIdx];
+    const t = targetAt(poolIdx);
     effectsRef.current.push({ x: t.x, y: t.y, type: 'miss', startTime: Date.now() });
 
     // Only penalize streak/multiplier for real targets timing out
@@ -422,7 +440,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
   };
 
   function createSlot(poolIdx: number, now: number): ActiveSlot {
-    const t             = targets[poolIdx];
+    const t             = targetAt(poolIdx);
     const displayNumber = t.isDecoy ? 0 : ++realSlotCounterRef.current;
     // Ring speed ramps up linearly from START_RING_MS → END_RING_MS over the 30s game
     const gameProgress  = startTimeRef.current > 0
@@ -493,6 +511,15 @@ export default function GameScreen({ config, socket, onResult }: Props) {
   // ── Socket ────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (config.solo) return;
+    socket.on('reflex:seeds', ({ seeds }: { seeds: Record<number, string> }) => {
+      seedsRef.current = { ...seedsRef.current, ...seeds };
+    });
+
+    // Tells the server this build takes targets from seeds, which switches it
+    // from room-code derivation to releasing a few positions at a time. Sent
+    // during the countdown so the opening window is in hand before play.
+    socket.emit('reflex:ready', { roomCode: config.roomCode });
+
     socket.on('reflex:opponent-hit', ({ targetIndex }: { targetIndex: number }) => {
       setOpponentHits(h => h + 1);
       void targetIndex;
@@ -547,7 +574,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
     let bestSlot: ActiveSlot | null = null;
     let bestDist = Infinity;
     for (const slot of activeSlotsRef.current) {
-      const t    = targets[slot.poolIdx];
+      const t    = targetAt(slot.poolIdx);
       const dist = Math.hypot(cx - t.x, cy - t.y);
       if (dist <= HIT_TOLERANCE && dist < bestDist) {
         bestDist = dist; bestSlot = slot;
@@ -572,7 +599,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
       return;
     }
 
-    const t        = targets[bestSlot.poolIdx];
+    const t        = targetAt(bestSlot.poolIdx);
     const slotIdx  = activeSlotsRef.current.indexOf(bestSlot);
     if (slotIdx !== -1) activeSlotsRef.current.splice(slotIdx, 1);
     clearTimeout(bestSlot.timeoutId);
@@ -620,7 +647,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
     floatersRef.current.push({ x: t.x, y: t.y, startTime: now, color: hitColor, pts, mult });
     flashRef.current = { startTime: now, color: '#ffffff', alpha: 0.15, duration: 80 };
     addNextSlot(now);
-  }, [targets, socket, config]);
+  }, [targetAt, socket, config]);
 
   // ── Render loop ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -660,7 +687,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
       if (phaseRef.current === 'playing') {
         const snapshot = [...activeSlotsRef.current];
         for (const slot of snapshot) {
-          const t       = targets[slot.poolIdx];
+          const t       = targetAt(slot.poolIdx);
           const elapsed = now - slot.appearTime;
           drawTarget(
             ctx, t, elapsed,
@@ -688,7 +715,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
     };
     frame = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(frame);
-  }, [targets]);
+  }, [targetAt]);
 
   // ── HUD values ────────────────────────────────────────────────────────────
   const timerDanger = timeLeft <= 5;
