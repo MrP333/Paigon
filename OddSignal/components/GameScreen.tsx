@@ -75,17 +75,27 @@ interface SetConfig {
   displaceVertex: number;
 }
 
-function generateSet(roomCode: string, setIdx: number, elapsedS: number): SetConfig {
+// Difficulty ramps on how many sets deep you are, not on the wall clock.
+// Two consequences, both good: solving faster reaches the harder tiers sooner,
+// so difficulty tracks progress instead of a timer; and set N is now identical
+// for every player in the room. Under the old elapsed-time rule two clients
+// sitting either side of the 10s or 20s boundary could pick different tiers
+// for the same set — and since the hard tier draws six extra rng values for
+// rotation jitter, their whole set would diverge from that point on.
+const TIER2_FROM = 7;
+const TIER3_FROM = 15;
+
+function generateSet(roomCode: string, setIdx: number): SetConfig {
   const rng = mulberry32(hashCode(roomCode + ':set:' + setIdx));
 
   // Layer 4: oddIdx is the FIRST rng call — server mirrors this to validate
   const oddIdx = Math.floor(rng() * 6);
 
-  const templates = elapsedS < 10 ? TIER1 : elapsedS < 20 ? TIER2 : TIER3;
+  const templates = setIdx < TIER2_FROM ? TIER1 : setIdx < TIER3_FROM ? TIER2 : TIER3;
   const { stdDef, oddDef } = templates[Math.floor(rng() * templates.length)];
 
   const baseRot = rng() * Math.PI * 2;
-  const isHard  = elapsedS >= 20;
+  const isHard  = setIdx >= TIER3_FROM;
   const rotations = Array.from({ length: 6 }, () => baseRot + (isHard ? (rng() - 0.5) * 0.30 : 0));
 
   const maxSides       = Math.max(stdDef.sides, oddDef.sides);
@@ -275,8 +285,8 @@ export default function GameScreen({ config, socket, onResult }: Props) {
     setTimeout(() => { if (el) el.style.animation = ''; }, 480);
   }
 
-  function loadSet(idx: number, elapsed: number) {
-    const set = generateSet(config.roomCode, idx, elapsed);
+  function loadSet(idx: number) {
+    const set = generateSet(config.roomCode, idx);
     setIdxRef.current = idx;
     setSetIdx(idx);
     setCurrentSet(set);
@@ -291,7 +301,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
 
   function startGame() {
     gameStartRef.current = Date.now();
-    loadSet(0, 0);
+    loadSet(0);
 
     tickRef.current = setInterval(() => {
       const elapsed = Math.floor((Date.now() - gameStartRef.current) / 1000);
@@ -422,7 +432,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
 
     // Advance immediately — instant next set
     const nextIdx = setIdxRef.current + 1;
-    loadSet(nextIdx, elapsed);
+    loadSet(nextIdx);
 
     // Restart game tick
     tickRef.current = setInterval(() => {
