@@ -24,7 +24,7 @@ import {
 } from 'three';
 import { Socket } from 'socket.io-client';
 import { GameConfig, ResultData } from '../types';
-import { generateCourse, getTrackWidth, GeneratedCourse, CourseObstacle } from '../engine/CourseGenerator';
+import { generateCourse, getTrackWidth, getTrackCenter, GeneratedCourse, CourseObstacle } from '../engine/CourseGenerator';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -56,15 +56,18 @@ interface BurstEvent { pos: Vector3; color: string; id: number; }
 // ── Obstacle physics ──────────────────────────────────────────────────────────
 
 function applyObstacleEffects(
-  obstacles: CourseObstacle[], pos: Vector3, vel: Vector3, time: number,
+  course: GeneratedCourse, pos: Vector3, vel: Vector3, time: number,
 ): boolean {
   let hit = false;
-  for (const obs of obstacles) {
+  for (const obs of course.obstacles) {
     const dz = pos.z - obs.zCenter;
     if (Math.abs(dz) > obs.zRadius + 2) continue;
+    // Obstacles are anchored relative to the track, so they sway with it.
+    // Leaving them on x = 0 would strand them off the track wherever it bends.
+    const ox = obs.xPos + getTrackCenter(course, obs.zCenter);
     switch (obs.type) {
       case 'moving_wall': {
-        const wallX = obs.xPos + (obs.params.amplitude ?? 3) * Math.sin((obs.params.speed ?? 1) * time + (obs.params.phase ?? 0));
+        const wallX = ox + (obs.params.amplitude ?? 3) * Math.sin((obs.params.speed ?? 1) * time + (obs.params.phase ?? 0));
         const wallHW = 0.8, wallHD = obs.zRadius + 0.3;
         if (Math.abs(dz) < wallHD && Math.abs(pos.x - wallX) < wallHW + PLAYER_R) {
           pos.x -= pos.x < wallX ? -(wallHW + PLAYER_R - Math.abs(pos.x - wallX)) : (wallHW + PLAYER_R - Math.abs(pos.x - wallX));
@@ -78,7 +81,7 @@ function applyObstacleEffects(
         const numArms = obs.params.numArms ?? 2;
         for (let a = 0; a < numArms; a++) {
           const armAngle = angle + (a / numArms) * Math.PI * 2;
-          const armX = obs.xPos + Math.cos(armAngle) * armLen;
+          const armX = ox + Math.cos(armAngle) * armLen;
           const armZ = obs.zCenter + Math.sin(armAngle) * armLen;
           const dx = pos.x - armX, ddz = pos.z - armZ;
           const dist = Math.sqrt(dx * dx + ddz * ddz);
@@ -92,7 +95,7 @@ function applyObstacleEffects(
         break;
       }
       case 'bounce_pad': {
-        const dx = pos.x - obs.xPos;
+        const dx = pos.x - ox;
         if (Math.abs(dx) < 1.2 && Math.abs(dz) < obs.zRadius + 1.2 && pos.y < 0.9) {
           vel.y = obs.params.boostUp ?? 12; vel.z += obs.params.boostFwd ?? 6;
         }
@@ -103,8 +106,8 @@ function applyObstacleEffects(
         const angle  = (obs.params.speed ?? 2) * time + (obs.params.phase ?? 0);
         const beamY = Math.sin(angle) * armLen, beamX = Math.cos(angle) * armLen;
         if (Math.abs(dz) < 0.7) {
-          const t = Math.max(0, Math.min(1, (pos.x - obs.xPos) / (beamX || 1)));
-          const nearDist = Math.sqrt((pos.x - (obs.xPos + beamX * t)) ** 2 + (pos.y - beamY * t) ** 2);
+          const t = Math.max(0, Math.min(1, (pos.x - ox) / (beamX || 1)));
+          const nearDist = Math.sqrt((pos.x - (ox + beamX * t)) ** 2 + (pos.y - beamY * t) ** 2);
           if (nearDist < PLAYER_R + 0.35) { vel.y = Math.max(vel.y, 12); vel.z -= 28; hit = true; }
         }
         break;
@@ -154,29 +157,41 @@ function Track({ course }: { course: GeneratedCourse }) {
 
   return (
     <>
-      {course.sections.map((s, i) => {
-        const len = s.zEnd - s.zStart, cz = s.zStart + len / 2;
-        const isNarrow = s.width <= 4;
-        return (
-          <group key={i}>
-            <mesh position={[0, -0.1, cz]} receiveShadow>
+      {/* Sections are split into short slabs so the lateral sway reads as a
+          curve rather than a staircase, and so the rendered floor sits exactly
+          where the collision centreline says it does. */}
+      {course.sections.flatMap((s, i) => {
+        const SLAB = 12;
+        const total = s.zEnd - s.zStart;
+        const count = Math.max(1, Math.ceil(total / SLAB));
+        return Array.from({ length: count }, (_, k) => {
+          const zStart = s.zStart + (total * k) / count;
+          const zEnd   = s.zStart + (total * (k + 1)) / count;
+          const len = zEnd - zStart, cz = zStart + len / 2;
+          const cx = getTrackCenter(course, cz);
+          const isNarrow = s.width <= 4;
+          const key = `${i}-${k}`;
+          return (
+          <group key={key}>
+            <mesh position={[cx, -0.1, cz]} receiveShadow>
               <boxGeometry args={[s.width, 0.2, len]} />
               <meshStandardMaterial color={isNarrow ? '#1a0020' : '#0c0c1a'} emissive={new Color(isNarrow ? '#3a002a' : '#000820')} emissiveIntensity={0.5} roughness={0.75} metalness={0.15} />
             </mesh>
-            <mesh position={[-(s.width / 2 + 0.05), 0.05, cz]}>
+            <mesh position={[cx - (s.width / 2 + 0.05), 0.05, cz]}>
               <boxGeometry args={[0.12, 0.22, len]} />
               <meshStandardMaterial ref={(el: any) => { envMats.current[i * 2] = el; }} color="#00ff88" emissive={new Color('#00ff88')} emissiveIntensity={1.2} />
             </mesh>
-            <mesh position={[(s.width / 2 + 0.05), 0.05, cz]}>
+            <mesh position={[cx + (s.width / 2 + 0.05), 0.05, cz]}>
               <boxGeometry args={[0.12, 0.22, len]} />
               <meshStandardMaterial ref={(el: any) => { envMats.current[i * 2 + 1] = el; }} color="#00ff88" emissive={new Color('#00ff88')} emissiveIntensity={1.2} />
             </mesh>
           </group>
-        );
+          );
+        });
       })}
 
       {cpsFiltered.map((cp, j) => (
-        <group key={cp.index} position={[0, 0, cp.z]}>
+        <group key={cp.index} position={[getTrackCenter(course, cp.z), 0, cp.z]}>
           <mesh position={[-7, 1.5, 0]} rotation={[0, 0, Math.PI / 2]}>
             <cylinderGeometry args={[0.18, 0.18, 3, 8]} />
             <meshStandardMaterial ref={(el: any) => { envMats.current[cpBase + j * 3] = el; }} color="#22d3ee" emissive={new Color('#22d3ee')} emissiveIntensity={1.5} />
@@ -223,14 +238,17 @@ function Track({ course }: { course: GeneratedCourse }) {
 
 // ── Obstacle meshes ───────────────────────────────────────────────────────────
 
-function ObstacleMeshes({ obstacles, time }: { obstacles: CourseObstacle[]; time: number }) {
+function ObstacleMeshes({ course, time }: { course: GeneratedCourse; time: number }) {
   const hOff = (time * 40) % 360;
   return (
     <>
-      {obstacles.map(obs => {
+      {course.obstacles.map(obs => {
+        // Drawn against the same centreline the collision uses, so what is on
+        // screen is where the obstacle actually is.
+        const ox = obs.xPos + getTrackCenter(course, obs.zCenter);
         switch (obs.type) {
           case 'moving_wall': {
-            const wallX = obs.xPos + (obs.params.amplitude ?? 3) * Math.sin((obs.params.speed ?? 1) * time + (obs.params.phase ?? 0));
+            const wallX = ox + (obs.params.amplitude ?? 3) * Math.sin((obs.params.speed ?? 1) * time + (obs.params.phase ?? 0));
             const mCol  = hslColor(hOff, 100, 50);
             return (
               <group key={obs.id}>
@@ -247,7 +265,7 @@ function ObstacleMeshes({ obstacles, time }: { obstacles: CourseObstacle[]; time
             const mCol  = hslColor((hOff + 200) % 360, 100, 50);
             const arms  = Array.from({ length: obs.params.numArms ?? 2 }, (_, a) => {
               const aa = angle + (a / (obs.params.numArms ?? 2)) * Math.PI * 2;
-              const ax = obs.xPos + Math.cos(aa) * (obs.params.armLength ?? 4.5) / 2;
+              const ax = ox + Math.cos(aa) * (obs.params.armLength ?? 4.5) / 2;
               const az = obs.zCenter + Math.sin(aa) * (obs.params.armLength ?? 4.5) / 2;
               return (
                 <mesh key={a} position={[ax, 0.7, az]} rotation={[0, -aa, 0]}>
@@ -259,11 +277,11 @@ function ObstacleMeshes({ obstacles, time }: { obstacles: CourseObstacle[]; time
             return (
               <group key={obs.id}>
                 {arms}
-                <mesh position={[obs.xPos, 1.0, obs.zCenter]}>
+                <mesh position={[ox, 1.0, obs.zCenter]}>
                   <cylinderGeometry args={[0.3, 0.3, 2, 8]} />
                   <meshStandardMaterial color={mCol} emissive={new Color(mCol)} emissiveIntensity={1} />
                 </mesh>
-                <PulsingLight color="#ff4400" base={5} dist={12} pos={[obs.xPos, 1, obs.zCenter]} rate={0.85} />
+                <PulsingLight color="#ff4400" base={5} dist={12} pos={[ox, 1, obs.zCenter]} rate={0.85} />
               </group>
             );
           }
@@ -271,18 +289,18 @@ function ObstacleMeshes({ obstacles, time }: { obstacles: CourseObstacle[]; time
             const mCol = hslColor((hOff + 120) % 360, 100, 55);
             return (
               <group key={obs.id}>
-                <mesh position={[obs.xPos, 0.06, obs.zCenter]}>
+                <mesh position={[ox, 0.06, obs.zCenter]}>
                   <cylinderGeometry args={[1.2, 1.2, 0.14, 16]} />
                   <meshStandardMaterial color={mCol} emissive={new Color(mCol)} emissiveIntensity={1.8} roughness={0.15} />
                 </mesh>
-                <PulsingLight color="#00ff88" base={6} dist={9} pos={[obs.xPos, 0.5, obs.zCenter]} rate={1.0} />
+                <PulsingLight color="#00ff88" base={6} dist={9} pos={[ox, 0.5, obs.zCenter]} rate={1.0} />
               </group>
             );
           }
           case 'spinning_beam': {
             const angle   = (obs.params.speed ?? 2) * time + (obs.params.phase ?? 0);
             const halfLen = (obs.params.armLength ?? 5) / 2;
-            const bx = obs.xPos + Math.cos(angle) * halfLen;
+            const bx = ox + Math.cos(angle) * halfLen;
             const by = Math.sin(angle) * halfLen;
             const mCol = hslColor((hOff + 290) % 360, 100, 50);
             return (
@@ -291,7 +309,7 @@ function ObstacleMeshes({ obstacles, time }: { obstacles: CourseObstacle[]; time
                   <boxGeometry args={[obs.params.armLength ?? 5, 0.35, 0.35]} />
                   <meshStandardMaterial color={mCol} emissive={new Color(mCol)} emissiveIntensity={1.5} roughness={0.15} />
                 </mesh>
-                <PulsingLight color="#ffdd00" base={4} dist={11} pos={[obs.xPos, halfLen, obs.zCenter]} rate={0.9} />
+                <PulsingLight color="#ffdd00" base={4} dist={11} pos={[ox, halfLen, obs.zCenter]} rate={0.9} />
               </group>
             );
           }
@@ -612,7 +630,10 @@ function PhysicsLoop({
 
     // ── Ground collision ──────────────────────────────────────────────────────
     const tw        = getTrackWidth(course, np.z);
-    const overTrack = Math.abs(np.x) <= tw / 2;
+    // The track sways laterally, so "on the track" is measured against the
+    // centreline at this depth rather than against x = 0.
+    const tc        = getTrackCenter(course, np.z);
+    const overTrack = Math.abs(np.x - tc) <= tw / 2;
     if (overTrack) {
       if (np.y < PLAYER_R) { np.y = PLAYER_R; p.vel.y = Math.max(0, p.vel.y); p.onGround = true; }
       else p.onGround = false;
@@ -626,7 +647,7 @@ function PhysicsLoop({
     }
 
     // ── Obstacle effects ──────────────────────────────────────────────────────
-    const hitOccurred = applyObstacleEffects(course.obstacles, np, p.vel, raceTime);
+    const hitOccurred = applyObstacleEffects(course, np, p.vel, raceTime);
     if (hitOccurred && (now - p.lastKnockMs) > KNOCK_CD_MS) {
       hitTimeRef.current = now; p.lastKnockMs = now;
     }
@@ -839,7 +860,7 @@ export default function GameScreen({ config, socket, onResult }: Props) {
 
         <ParallaxBackground physRef={physRef} />
         <Track course={course} />
-        <ObstacleMeshes obstacles={course.obstacles} time={obsTime} />
+        <ObstacleMeshes course={course} time={obsTime} />
         <PlayerOrb pos={playerPos} color={config.playerColor} hitTimeRef={hitTimeRef} fallStateRef={fallStateRef} />
         {otherOrbs.map(orb => <OtherPlayerOrb key={orb.id} orb={orb} />)}
         <SpeedLines physRef={physRef} color={config.playerColor} />

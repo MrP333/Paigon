@@ -54,7 +54,14 @@ export interface Checkpoint {
   index: number;
 }
 
+export interface CourseBend {
+  amp: number;
+  freq: number;
+  phase: number;
+}
+
 export interface GeneratedCourse {
+  bend: CourseBend[];
   sections: TrackSection[];
   obstacles: CourseObstacle[];
   checkpoints: Checkpoint[];
@@ -66,6 +73,11 @@ const FINISH_Z           = 490;
 const NORMAL_TRACK_WIDTH = 12;
 const BEAM_X_RANGE       = 2.5;
 const CHECKPOINT_COUNT   = 4;
+// Lateral sway of the track centre. Every course was a dead-straight corridor,
+// so nothing was ever asked of steering. Kept gentle enough that following the
+// line never costs more lateral speed than the movement cap allows.
+const BEND_RAMP_Z        = 70;   // straight off the line, easing into the sway
+const BEND_MAX_AMP       = 7;
 
 const REGULAR_TYPES: ObstacleType[] = ['moving_wall', 'rotating_barrier', 'spinning_beam'];
 
@@ -73,6 +85,18 @@ export function generateCourse(roomCode: string): GeneratedCourse {
   const rng = mulberry32(seedFromCode(roomCode || 'SOLO_PRACTICE'));
   const obstacles: CourseObstacle[] = [];
   let idCounter = 0;
+
+  // One or two sine components: one gives a long lazy S, two an irregular
+  // weave that does not telegraph where the next turn goes.
+  const bend: CourseBend[] = [];
+  const bendCount = rng() < 0.4 ? 1 : 2;
+  for (let i = 0; i < bendCount; i++) {
+    bend.push({
+      amp: (BEND_MAX_AMP / bendCount) * (0.55 + rng() * 0.45),
+      freq: (2 * Math.PI) / (140 + rng() * 130),
+      phase: rng() * Math.PI * 2,
+    });
+  }
 
   // ── Seeded layout parameters ───────────────────────────────────────────────
   const numSlots   = 9 + Math.floor(rng() * 7);  // 9–15 obstacle slots
@@ -247,7 +271,33 @@ export function generateCourse(roomCode: string): GeneratedCourse {
     checkpoints.push({ z: Math.round((FINISH_Z * i) / (CHECKPOINT_COUNT + 1)), index: i });
   }
 
-  return { sections, obstacles, checkpoints, finishZ: FINISH_Z, totalLength: FINISH_Z };
+  // Obstacle x offsets were chosen against a track that was always 12 wide.
+  // Now that open stretches vary and constrictions exist, an anchor picked at
+  // the old spread can sit past the edge — a bounce pad floating over the void
+  // is simply unreachable. Pull each one back inside the track it sits on.
+  const course: GeneratedCourse = { bend, sections, obstacles, checkpoints, finishZ: FINISH_Z, totalLength: FINISH_Z };
+  for (const o of obstacles) {
+    const halfW  = getTrackWidth(course, o.zCenter) / 2;
+    const margin = o.type === 'bounce_pad' ? 1.3 : 1.0;
+    const limit  = Math.max(0, halfW - margin);
+    o.xPos = Math.max(-limit, Math.min(limit, o.xPos));
+  }
+
+  return course;
+}
+
+/**
+ * Lateral centre of the track at a given depth. Collision, rendering and
+ * obstacle placement all read from here, so they cannot disagree about where
+ * the track actually is. Ramps from zero so the player is never off-centre at
+ * the start line or after a respawn onto an early checkpoint.
+ */
+export function getTrackCenter(course: GeneratedCourse, z: number): number {
+  if (!course.bend?.length) return 0;
+  const ramp = Math.min(1, Math.max(0, z / BEND_RAMP_Z));
+  let x = 0;
+  for (const b of course.bend) x += b.amp * Math.sin(b.freq * z + b.phase) - b.amp * Math.sin(b.phase);
+  return x * ramp;
 }
 
 export function getTrackWidth(course: GeneratedCourse, z: number): number {
