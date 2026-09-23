@@ -114,9 +114,31 @@ function makeTarget(seed: string, index: number, placed: Target[]): Target {
   return { x, y, index, ringMs: 0, isDecoy }; // ringMs set per-slot at spawn time
 }
 
-/** Solo and trial runs have no server lobby, so they derive locally. */
-function localTargetSeed(roomCode: string, index: number): string {
-  return roomCode + ':target:' + index;
+/**
+ * Fallback for runs with no server lobby (solo, trial) and for any round where
+ * seeds never arrive. This reproduces the original single-stream derivation
+ * exactly rather than inventing a per-index seed, so a client falling back sees
+ * the same layout a pre-seed build would have drawn. The rejection-sampling
+ * loop consumes a variable number of draws, so targets must be built in order
+ * off one persistent stream to stay in step.
+ */
+function makeLocalPool(roomCode: string) {
+  const rng = mulberry32(hashCode(roomCode));
+  const built: Target[] = [];
+  return (index: number): Target => {
+    while (built.length <= index) {
+      const i = built.length;
+      let x = 0, y = 0, tries = 0;
+      do {
+        x = PAD + rng() * (CW - PAD * 2);
+        y = PAD + rng() * (CH - PAD * 2);
+        tries++;
+      } while (tries < 60 && built.some(t => Math.hypot(t.x - x, t.y - y) < 120));
+      rng(); // consumed to keep isDecoy seed position stable
+      built.push({ x, y, index: i, ringMs: 0, isDecoy: rng() < DECOY_RATE });
+    }
+    return built[index];
+  };
 }
 
 // ── Background ────────────────────────────────────────────────────────────────
@@ -390,11 +412,19 @@ export default function GameScreen({ config, socket, onResult }: Props) {
   const seedsRef   = useRef<Record<number, string>>({});
   const targetsRef = useRef<Target[]>([]);
 
+  const localPoolRef = useRef<((i: number) => Target) | null>(null);
+
   const targetAt = useCallback((index: number): Target => {
     const cached = targetsRef.current[index];
     if (cached) return cached;
-    const seed = seedsRef.current[index] ?? localTargetSeed(config.roomCode, index);
-    const built = makeTarget(seed, index, targetsRef.current.filter(Boolean));
+    const seed = seedsRef.current[index];
+    let built: Target;
+    if (seed) {
+      built = makeTarget(seed, index, targetsRef.current.filter(Boolean));
+    } else {
+      if (!localPoolRef.current) localPoolRef.current = makeLocalPool(config.roomCode);
+      built = localPoolRef.current(index);
+    }
     targetsRef.current[index] = built;
     return built;
   }, [config.roomCode]);
