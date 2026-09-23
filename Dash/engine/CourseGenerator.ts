@@ -189,18 +189,55 @@ export function generateCourse(roomCode: string): GeneratedCourse {
 
   obstacles.sort((a, b) => a.zCenter - b.zCenter);
 
-  // ── Track sections (narrow where bridges are) ──────────────────────────────
-  const sections: TrackSection[] = [];
-  const narrowObs = obstacles.filter(o => o.type === 'narrow_bridge');
-  let cursor = 0;
-  for (const nb of narrowObs) {
-    const nbStart = nb.zCenter - nb.zRadius;
-    const nbEnd   = nb.zCenter + nb.zRadius;
-    if (cursor < nbStart) sections.push({ zStart: cursor, zEnd: nbStart, width: NORMAL_TRACK_WIDTH });
-    sections.push({ zStart: nbStart, zEnd: nbEnd, width: nb.params.bridgeWidth ?? 2 });
-    cursor = nbEnd;
+  // ── Track sections ─────────────────────────────────────────────────────────
+  // The track used to hold exactly two widths: full width everywhere, tightrope
+  // at a bridge. Every course therefore read as wide, tightrope, wide. Now the
+  // open stretches vary in width, bridges are approached through a taper rather
+  // than a step change, and a course may include mid-width constrictions that
+  // squeeze without demanding a tightrope.
+  const TAPER_LEN    = 14;
+  const MIN_OPEN     = 8.5;   // never so tight that an open stretch feels like a bridge
+  const MAX_OPEN     = 14;
+
+  type NarrowZone = { start: number; end: number; width: number };
+  const zones: NarrowZone[] = obstacles
+    .filter(o => o.type === 'narrow_bridge')
+    .map(o => ({ start: o.zCenter - o.zRadius, end: o.zCenter + o.zRadius, width: o.params.bridgeWidth ?? 2 }));
+
+  // 0–2 constrictions: tighter than open track, far wider than a bridge.
+  const constrictions = Math.floor(rng() * 3);
+  for (let i = 0; i < constrictions; i++) {
+    const cz  = 60 + rng() * (FINISH_Z - 140);
+    const len = 22 + rng() * 26;
+    const zone = { start: cz, end: cz + len, width: 4.5 + rng() * 2.5 };
+    // Keep clear of bridges and their tapers so widths never fight each other.
+    const clash = zones.some(z => zone.start < z.end + TAPER_LEN * 2 && zone.end > z.start - TAPER_LEN * 2);
+    if (!clash) zones.push(zone);
   }
-  if (cursor < FINISH_Z + 20) sections.push({ zStart: cursor, zEnd: FINISH_Z + 20, width: NORMAL_TRACK_WIDTH });
+  zones.sort((a, b) => a.start - b.start);
+
+  const sections: TrackSection[] = [];
+  let cursor = 0;
+  // Every section starts exactly where the last one ended and the cursor only
+  // moves forward, so the floor cannot gap or overlap however close two zones
+  // land. A gap would fall through to getTrackWidth's default and put full
+  // width under the player where the track should be a bridge.
+  const advanceTo = (zEnd: number, width: number) => {
+    if (zEnd <= cursor) return;
+    sections.push({ zStart: cursor, zEnd, width });
+    cursor = zEnd;
+  };
+
+  for (const zone of zones) {
+    if (zone.end <= cursor) continue;               // already covered by a previous taper
+    const openWidth = MIN_OPEN + rng() * (MAX_OPEN - MIN_OPEN);
+    const mid = (openWidth + zone.width) / 2;       // eases the edge in and out
+    advanceTo(Math.max(cursor, zone.start - TAPER_LEN), openWidth);
+    advanceTo(zone.start, mid);
+    advanceTo(zone.end, zone.width);
+    advanceTo(zone.end + TAPER_LEN, mid);
+  }
+  advanceTo(FINISH_Z + 20, MIN_OPEN + rng() * (MAX_OPEN - MIN_OPEN));
 
   // ── Checkpoints ────────────────────────────────────────────────────────────
   // Evenly spaced so a late fall costs ~1/5 of the course rather than half of it.
