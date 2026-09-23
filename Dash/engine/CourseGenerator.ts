@@ -82,12 +82,35 @@ export function generateCourse(roomCode: string): GeneratedCourse {
   const ZONE_END   = 455;
   const ZONE_LEN   = ZONE_END - ZONE_START;
 
-  // ── Z positions: evenly spaced base + per-slot jitter ────────────────────
-  const zPositions: number[] = [];
+  // ── Z positions ───────────────────────────────────────────────────────────
+  // Evenly spaced positions with small jitter made every course feel the same:
+  // the contents changed but the rhythm never did. Gaps are now drawn from a
+  // per-course profile, so a seed can produce a tight cluster then a long open
+  // run rather than a metronome. MIN_GAP keeps a cluster passable.
+  const MIN_GAP = 18;
+  const profile = rng();
+  // Low variance reads as steady, high as bursty. Picked per course so seeds
+  // differ in character, not just in which obstacles appear.
+  const burst = 0.35 + profile * 1.15;
+
+  const rawGaps: number[] = [];
   for (let i = 0; i < numSlots; i++) {
-    const base   = ZONE_START + ((i + 0.5) / numSlots) * ZONE_LEN;
-    const jitter = (rng() - 0.5) * (ZONE_LEN / numSlots) * 0.5;
-    zPositions.push(Math.round(base + jitter));
+    // Gap weights spread further apart as burst rises.
+    rawGaps.push(1 + (rng() ** 2) * burst * 2.2);
+  }
+  const gapTotal = rawGaps.reduce((a, b) => a + b, 0);
+
+  // Reserve the minimum gap for every slot first, then share what is left out
+  // by weight. Flooring each gap independently would overrun the zone and pile
+  // the later obstacles on top of each other at its end.
+  const reserved  = numSlots * MIN_GAP;
+  const spendable = Math.max(0, ZONE_LEN - reserved);
+
+  const zPositions: number[] = [];
+  let cursorZ = ZONE_START;
+  for (let i = 0; i < numSlots; i++) {
+    cursorZ += MIN_GAP + (rawGaps[i] / gapTotal) * spendable;
+    zPositions.push(Math.round(Math.min(cursorZ, ZONE_END)));
   }
   zPositions.sort((a, b) => a - b);
 
