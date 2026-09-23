@@ -539,7 +539,16 @@ function PhysicsLoop({
     const p   = physRef.current;
     const now = Date.now();
 
-    setObsTime(state.clock.elapsedTime);
+    // Obstacle phase must run off the race clock, not the render clock.
+    // state.clock.elapsedTime starts when the Canvas mounts, which depends on
+    // each machine's asset load, so two players in the same room were seeing
+    // the same obstacle in different positions at the same moment — different
+    // courses, not just different luck. Race start is triggered by the same
+    // match event on every client, so it is common to within network jitter.
+    const raceTime = physRef.current.startTime
+      ? (Date.now() - physRef.current.startTime) / 1000
+      : 0;
+    setObsTime(raceTime);
 
     if (!raceActive || p.finished) {
       camera.position.lerp(new Vector3(0, 5, -8), 0.05);
@@ -617,7 +626,7 @@ function PhysicsLoop({
     }
 
     // ── Obstacle effects ──────────────────────────────────────────────────────
-    const hitOccurred = applyObstacleEffects(course.obstacles, np, p.vel, state.clock.elapsedTime);
+    const hitOccurred = applyObstacleEffects(course.obstacles, np, p.vel, raceTime);
     if (hitOccurred && (now - p.lastKnockMs) > KNOCK_CD_MS) {
       hitTimeRef.current = now; p.lastKnockMs = now;
     }
