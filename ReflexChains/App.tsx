@@ -6,6 +6,7 @@ import { auth, db } from './services/firebase';
 import { identifyUser, track } from './services/analytics';
 import CalibrationGate from './components/CalibrationGate';
 import Notice, { NoticeData } from './components/Notice';
+import ConnectionBanner from './components/ConnectionBanner';
 import HomeScreen from './components/HomeScreen';
 import WaitingScreen from './components/WaitingScreen';
 import GameScreen from './components/GameScreen';
@@ -24,6 +25,9 @@ export default function App() {
   );
   const [screen, setScreen] = useState<'home' | 'waiting' | 'game' | 'trial' | 'result'>('home');
   const [notice, setNotice] = useState<NoticeData | null>(null);
+  // The socket lives in a ref, which never triggers a render; this lets the
+  // connection banner mount once the socket actually exists.
+  const [socketReady, setSocketReady] = useState(false);
   const [gameConfig, setGameConfig] = useState<GameConfig | null>(null);
   const [resultData, setResultData] = useState<ResultData | null>(null);
   const socketRef = useRef<Socket | null>(null);
@@ -87,6 +91,7 @@ export default function App() {
   function getSocket() {
     if (!socketRef.current) {
       socketRef.current = io(SERVER_URL, { transports: ['polling', 'websocket'] });
+      setSocketReady(true);
     }
     return socketRef.current;
   }
@@ -366,6 +371,7 @@ export default function App() {
       )}
 
       {notice && <Notice notice={notice} onClose={() => setNotice(null)} />}
+      <ConnectionBanner socket={socketReady ? socketRef.current : null} />
     </div>
   );
 }
