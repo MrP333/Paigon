@@ -123,11 +123,7 @@ function applyObstacleEffects(
   return hit;
 }
 
-const CP_COLORS = ['#22d3ee', '#ff0080', '#ffd700'];
-
-function hslColor(h: number, s = 100, l = 55) {
-  return `hsl(${((h % 360) + 360) % 360},${s}%,${l}%)`;
-}
+const CP_COLORS = [CYBER.open, CYBER.fill, CYBER.gold];
 
 // ── Pulsing point light ───────────────────────────────────────────────────────
 
