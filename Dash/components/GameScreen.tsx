@@ -18,10 +18,14 @@ const GAME_CSS = `
 
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import {
-  Vector3, Color, MeshStandardMaterial,
+  Vector3, Color, MeshStandardMaterial, ShaderMaterial, BackSide,
   BufferGeometry, BufferAttribute, DynamicDrawUsage,
   LineSegments, LineBasicMaterial, Points, PointsMaterial,
 } from 'three';
+import {
+  CYBER, getTrackMaterial, getRailMaterial, pushTrackTime,
+  OBSTACLE_MAT, pulseObstacleEmissive,
+} from './cyber';
 import { Socket } from 'socket.io-client';
 import { GameConfig, ResultData } from '../types';
 import { generateCourse, getTrackWidth, getTrackCenter, GeneratedCourse, CourseObstacle } from '../engine/CourseGenerator';
@@ -139,23 +143,29 @@ function PulsingLight({ color, base, dist, pos, rate }: {
 
 // ── Track geometry ────────────────────────────────────────────────────────────
 
-function Track({ course }: { course: GeneratedCourse }) {
-  const envMats  = useRef<any[]>([]);
-  const tmpColor = useRef(new Color());
-
-  useFrame(({ clock }) => {
-    const h = (clock.elapsedTime * 40) % 360;
-    envMats.current.forEach((m, i) => {
-      if (!m) return;
-      tmpColor.current.setHSL(((h + i * 18) % 360) / 360, 1, 0.6);
-      m.color.copy(tmpColor.current);
-      m.emissive.copy(tmpColor.current);
-    });
+/** Shared, so the gates and the start pad compile one program between them. */
+const emissiveMat = (hex: string, intensity: number, roughness = 0.2) =>
+  new MeshStandardMaterial({
+    color: hex, emissive: new Color(hex),
+    emissiveIntensity: intensity, roughness, toneMapped: false,
   });
 
+const GATE_MAT        = emissiveMat(CYBER.open, 1.5);
+const FINISH_MAT      = emissiveMat(CYBER.gold, 2.0);
+const FINISH_POST_MAT = emissiveMat(CYBER.barrier, 1.5);
+const STAGE_MAT       = new MeshStandardMaterial({
+  color: '#0b1020', emissive: new Color(CYBER.open),
+  emissiveIntensity: 0.25, roughness: 0.5, metalness: 0.2,
+});
+
+function Track({ course }: { course: GeneratedCourse }) {
+  // The rainbow hue cycle that used to run here is gone. It read as festive
+  // rather than fast, and it actively hurt play: the rails were the only cue
+  // for how wide the track ahead is, and cycling every rail through the same
+  // hue meant a bridge looked exactly like an open straight. The rails now
+  // carry the width band — cyan open, amber constriction, magenta bridge — so
+  // the colour ahead tells you what you are about to drive into.
   const cpsFiltered = course.checkpoints.filter(cp => cp.index > 0);
-  const cpBase      = course.sections.length * 2;
-  const finishBase  = cpBase + cpsFiltered.length * 3;
 
   return (
     <>
@@ -171,21 +181,17 @@ function Track({ course }: { course: GeneratedCourse }) {
           const zEnd   = s.zStart + (total * (k + 1)) / count;
           const len = zEnd - zStart, cz = zStart + len / 2;
           const cx = getTrackCenter(course, cz);
-          const isNarrow = s.width <= 4;
           const key = `${i}-${k}`;
           return (
           <group key={key}>
-            <mesh position={[cx, -0.1, cz]} receiveShadow>
+            <mesh position={[cx, -0.1, cz]} receiveShadow material={getTrackMaterial(s.width)}>
               <boxGeometry args={[s.width, 0.2, len]} />
-              <meshStandardMaterial color={isNarrow ? '#1a0020' : '#0c0c1a'} emissive={new Color(isNarrow ? '#3a002a' : '#000820')} emissiveIntensity={0.5} roughness={0.75} metalness={0.15} />
             </mesh>
-            <mesh position={[cx - (s.width / 2 + 0.05), 0.05, cz]}>
+            <mesh position={[cx - (s.width / 2 + 0.05), 0.05, cz]} material={getRailMaterial(s.width)}>
               <boxGeometry args={[0.12, 0.22, len]} />
-              <meshStandardMaterial ref={(el: any) => { envMats.current[i * 2] = el; }} color="#00ff88" emissive={new Color('#00ff88')} emissiveIntensity={1.2} />
             </mesh>
-            <mesh position={[cx + (s.width / 2 + 0.05), 0.05, cz]}>
+            <mesh position={[cx + (s.width / 2 + 0.05), 0.05, cz]} material={getRailMaterial(s.width)}>
               <boxGeometry args={[0.12, 0.22, len]} />
-              <meshStandardMaterial ref={(el: any) => { envMats.current[i * 2 + 1] = el; }} color="#00ff88" emissive={new Color('#00ff88')} emissiveIntensity={1.2} />
             </mesh>
           </group>
           );
@@ -194,45 +200,37 @@ function Track({ course }: { course: GeneratedCourse }) {
 
       {cpsFiltered.map((cp, j) => (
         <group key={cp.index} position={[getTrackCenter(course, cp.z), 0, cp.z]}>
-          <mesh position={[-7, 1.5, 0]} rotation={[0, 0, Math.PI / 2]}>
+          <mesh position={[-7, 1.5, 0]} rotation={[0, 0, Math.PI / 2]} material={GATE_MAT}>
             <cylinderGeometry args={[0.18, 0.18, 3, 8]} />
-            <meshStandardMaterial ref={(el: any) => { envMats.current[cpBase + j * 3] = el; }} color="#22d3ee" emissive={new Color('#22d3ee')} emissiveIntensity={1.5} />
           </mesh>
-          <mesh position={[7, 1.5, 0]} rotation={[0, 0, Math.PI / 2]}>
+          <mesh position={[7, 1.5, 0]} rotation={[0, 0, Math.PI / 2]} material={GATE_MAT}>
             <cylinderGeometry args={[0.18, 0.18, 3, 8]} />
-            <meshStandardMaterial ref={(el: any) => { envMats.current[cpBase + j * 3 + 1] = el; }} color="#22d3ee" emissive={new Color('#22d3ee')} emissiveIntensity={1.5} />
           </mesh>
-          <mesh position={[0, 2.8, 0]}>
+          <mesh position={[0, 2.8, 0]} material={GATE_MAT}>
             <boxGeometry args={[14, 0.18, 0.18]} />
-            <meshStandardMaterial ref={(el: any) => { envMats.current[cpBase + j * 3 + 2] = el; }} color="#22d3ee" emissive={new Color('#22d3ee')} emissiveIntensity={1.5} />
           </mesh>
-          <pointLight position={[0, 2, 0]} color="#22d3ee" intensity={4} distance={12} />
+          <pointLight position={[0, 2, 0]} color={CYBER.open} intensity={4} distance={12} />
         </group>
       ))}
 
       <group position={[0, 0, FINISH_Z]}>
-        <mesh position={[0, 0, 0]}>
+        <mesh position={[0, 0, 0]} material={FINISH_MAT}>
           <boxGeometry args={[12, 0.25, 1]} />
-          <meshStandardMaterial ref={(el: any) => { envMats.current[finishBase] = el; }} color="#ffd700" emissive={new Color('#ffd700')} emissiveIntensity={2} />
         </mesh>
-        <mesh position={[-6.5, 2.5, 0]} rotation={[0, 0, Math.PI / 2]}>
+        <mesh position={[-6.5, 2.5, 0]} rotation={[0, 0, Math.PI / 2]} material={FINISH_POST_MAT}>
           <cylinderGeometry args={[0.25, 0.25, 5, 8]} />
-          <meshStandardMaterial ref={(el: any) => { envMats.current[finishBase + 1] = el; }} color="#ff8c00" emissive={new Color('#ff8c00')} emissiveIntensity={1.5} />
         </mesh>
-        <mesh position={[6.5, 2.5, 0]} rotation={[0, 0, Math.PI / 2]}>
+        <mesh position={[6.5, 2.5, 0]} rotation={[0, 0, Math.PI / 2]} material={FINISH_POST_MAT}>
           <cylinderGeometry args={[0.25, 0.25, 5, 8]} />
-          <meshStandardMaterial ref={(el: any) => { envMats.current[finishBase + 2] = el; }} color="#ff8c00" emissive={new Color('#ff8c00')} emissiveIntensity={1.5} />
         </mesh>
-        <mesh position={[0, 5, 0]}>
+        <mesh position={[0, 5, 0]} material={FINISH_MAT}>
           <boxGeometry args={[14, 0.25, 0.25]} />
-          <meshStandardMaterial ref={(el: any) => { envMats.current[finishBase + 3] = el; }} color="#ffd700" emissive={new Color('#ffd700')} emissiveIntensity={2} />
         </mesh>
-        <pointLight position={[0, 2, 0]} color="#ffd700" intensity={8} distance={18} />
+        <pointLight position={[0, 2, 0]} color={CYBER.gold} intensity={8} distance={18} />
       </group>
 
-      <mesh position={[0, -0.08, 12]}>
+      <mesh position={[0, -0.08, 12]} material={STAGE_MAT}>
         <boxGeometry args={[12, 0.06, 14]} />
-        <meshStandardMaterial color="#0a1a2a" emissive={new Color('#002244')} emissiveIntensity={0.6} roughness={0.5} />
       </mesh>
     </>
   );
@@ -241,7 +239,6 @@ function Track({ course }: { course: GeneratedCourse }) {
 // ── Obstacle meshes ───────────────────────────────────────────────────────────
 
 function ObstacleMeshes({ course, time }: { course: GeneratedCourse; time: number }) {
-  const hOff = (time * 40) % 360;
   return (
     <>
       {course.obstacles.map(obs => {
@@ -251,51 +248,44 @@ function ObstacleMeshes({ course, time }: { course: GeneratedCourse; time: numbe
         switch (obs.type) {
           case 'moving_wall': {
             const wallX = ox + (obs.params.amplitude ?? 3) * Math.sin((obs.params.speed ?? 1) * time + (obs.params.phase ?? 0));
-            const mCol  = hslColor(hOff, 100, 50);
             return (
               <group key={obs.id}>
-                <mesh position={[wallX, 1.5, obs.zCenter]} castShadow>
+                <mesh position={[wallX, 1.5, obs.zCenter]} castShadow material={OBSTACLE_MAT.moving_wall}>
                   <boxGeometry args={[1.6, 3, 0.5]} />
-                  <meshStandardMaterial color={mCol} emissive={new Color(mCol)} emissiveIntensity={0.9} roughness={0.25} metalness={0.4} />
                 </mesh>
-                <PulsingLight color="#4499ff" base={5} dist={10} pos={[wallX, 1.5, obs.zCenter]} rate={0.7} />
+                <PulsingLight color={CYBER.wall} base={5} dist={10} pos={[wallX, 1.5, obs.zCenter]} rate={0.7} />
               </group>
             );
           }
           case 'rotating_barrier': {
             const angle = (obs.params.speed ?? 1.2) * time + (obs.params.phase ?? 0);
-            const mCol  = hslColor((hOff + 200) % 360, 100, 50);
             const arms  = Array.from({ length: obs.params.numArms ?? 2 }, (_, a) => {
               const aa = angle + (a / (obs.params.numArms ?? 2)) * Math.PI * 2;
               const ax = ox + Math.cos(aa) * (obs.params.armLength ?? 4.5) / 2;
               const az = obs.zCenter + Math.sin(aa) * (obs.params.armLength ?? 4.5) / 2;
               return (
-                <mesh key={a} position={[ax, 0.7, az]} rotation={[0, -aa, 0]}>
+                <mesh key={a} position={[ax, 0.7, az]} rotation={[0, -aa, 0]} castShadow material={OBSTACLE_MAT.rotating_barrier}>
                   <boxGeometry args={[obs.params.armLength ?? 4.5, 0.4, 0.4]} />
-                  <meshStandardMaterial color={mCol} emissive={new Color(mCol)} emissiveIntensity={1.2} roughness={0.2} />
                 </mesh>
               );
             });
             return (
               <group key={obs.id}>
                 {arms}
-                <mesh position={[ox, 1.0, obs.zCenter]}>
+                <mesh position={[ox, 1.0, obs.zCenter]} material={OBSTACLE_MAT.rotating_barrier}>
                   <cylinderGeometry args={[0.3, 0.3, 2, 8]} />
-                  <meshStandardMaterial color={mCol} emissive={new Color(mCol)} emissiveIntensity={1} />
                 </mesh>
-                <PulsingLight color="#ff4400" base={5} dist={12} pos={[ox, 1, obs.zCenter]} rate={0.85} />
+                <PulsingLight color={CYBER.barrier} base={5} dist={12} pos={[ox, 1, obs.zCenter]} rate={0.85} />
               </group>
             );
           }
           case 'bounce_pad': {
-            const mCol = hslColor((hOff + 120) % 360, 100, 55);
             return (
               <group key={obs.id}>
-                <mesh position={[ox, 0.06, obs.zCenter]}>
+                <mesh position={[ox, 0.06, obs.zCenter]} material={OBSTACLE_MAT.bounce_pad}>
                   <cylinderGeometry args={[1.2, 1.2, 0.14, 16]} />
-                  <meshStandardMaterial color={mCol} emissive={new Color(mCol)} emissiveIntensity={1.8} roughness={0.15} />
                 </mesh>
-                <PulsingLight color="#00ff88" base={6} dist={9} pos={[ox, 0.5, obs.zCenter]} rate={1.0} />
+                <PulsingLight color={CYBER.pad} base={6} dist={9} pos={[ox, 0.5, obs.zCenter]} rate={1.0} />
               </group>
             );
           }
@@ -304,14 +294,12 @@ function ObstacleMeshes({ course, time }: { course: GeneratedCourse; time: numbe
             const halfLen = (obs.params.armLength ?? 5) / 2;
             const bx = ox + Math.cos(angle) * halfLen;
             const by = Math.sin(angle) * halfLen;
-            const mCol = hslColor((hOff + 290) % 360, 100, 50);
             return (
               <group key={obs.id}>
-                <mesh position={[bx, by + halfLen, obs.zCenter]} rotation={[0, 0, -angle]}>
+                <mesh position={[bx, by + halfLen, obs.zCenter]} rotation={[0, 0, -angle]} material={OBSTACLE_MAT.spinning_beam}>
                   <boxGeometry args={[obs.params.armLength ?? 5, 0.35, 0.35]} />
-                  <meshStandardMaterial color={mCol} emissive={new Color(mCol)} emissiveIntensity={1.5} roughness={0.15} />
                 </mesh>
-                <PulsingLight color="#ffdd00" base={4} dist={11} pos={[ox, halfLen, obs.zCenter]} rate={0.9} />
+                <PulsingLight color={CYBER.beam} base={4} dist={11} pos={[ox, halfLen, obs.zCenter]} rate={0.9} />
               </group>
             );
           }
@@ -376,6 +364,49 @@ function OtherPlayerOrb({ orb }: { orb: OtherOrb }) {
   );
 }
 
+// ── Horizon ───────────────────────────────────────────────────────────────────
+
+/**
+ * Replaces the flat black inside-out sphere. A vertical gradient plus a thin
+ * glow band at the horizon gives the fog something to dissolve into, so the
+ * track no longer ends in a hard edge against nothing.
+ */
+function HorizonDome() {
+  const mat = useMemo(() => new ShaderMaterial({
+    side: BackSide,
+    depthWrite: false,
+    uniforms: {
+      uTop:     { value: new Color(CYBER.void) },
+      uHorizon: { value: new Color(CYBER.fog) },
+      uGlow:    { value: new Color(CYBER.open) },
+    },
+    vertexShader: `
+      varying vec3 vDir;
+      void main() {
+        vDir = normalize(position);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uTop; uniform vec3 uHorizon; uniform vec3 uGlow;
+      varying vec3 vDir;
+      void main() {
+        float h = clamp(vDir.y * 0.5 + 0.5, 0.0, 1.0);
+        vec3 col = mix(uHorizon, uTop, smoothstep(0.5, 0.95, h));
+        float band = 1.0 - smoothstep(0.0, 0.06, abs(vDir.y));
+        col += uGlow * band * 0.22;
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+  }), []);
+
+  return (
+    <mesh position={[0, 0, 200]} material={mat}>
+      <sphereGeometry args={[600, 32, 24]} />
+    </mesh>
+  );
+}
+
 // ── Parallax background shapes ────────────────────────────────────────────────
 
 function ParallaxBackground({ physRef }: { physRef: React.MutableRefObject<PhysState> }) {
@@ -388,7 +419,10 @@ function ParallaxBackground({ physRef }: { physRef: React.MutableRefObject<PhysS
     z: (i / N) * 500,
     scale: 0.5 + (i % 7) * 0.25,
     type: i % 3,
-    hue: (i / N) * 360,
+    // Two hue clusters — cyan and magenta — instead of a full spectrum sweep.
+    // The rainbow read as confetti and, worse, put green and amber debris in
+    // the sky that looked like track rails from a distance.
+    hue: (i % 2 === 0 ? 186 : 322) + ((i * 37) % 22) - 11,
     rx: Math.sin(i) * 0.4,
     ry: Math.cos(i * 1.3) * 0.4,
     pFactor: 2.0 + (i % 3) * 0.5,
@@ -422,9 +456,9 @@ function ParallaxBackground({ physRef }: { physRef: React.MutableRefObject<PhysS
            obj.type === 1 ? <octahedronGeometry args={[1]} /> :
            <tetrahedronGeometry args={[1]} />}
           <meshStandardMaterial
-            color={`hsl(${obj.hue},100%,55%)`}
-            emissive={new Color().setHSL(obj.hue / 360, 1, 0.45)}
-            emissiveIntensity={1.0} transparent opacity={0.32}
+            color={`hsl(${obj.hue},90%,55%)`}
+            emissive={new Color().setHSL(obj.hue / 360, 0.9, 0.42)}
+            emissiveIntensity={0.85} transparent opacity={0.24}
           />
         </mesh>
       ))}
@@ -569,6 +603,10 @@ function PhysicsLoop({
       ? (Date.now() - physRef.current.startTime) / 1000
       : 0;
     setObsTime(raceTime);
+    // Same clock for the visuals, for the same reason: lane streaks and hazard
+    // pulses that ran off the render clock would drift between players.
+    pushTrackTime(raceTime);
+    pulseObstacleEmissive(raceTime);
 
     if (!raceActive || p.finished) {
       camera.position.lerp(new Vector3(0, 5, -8), 0.05);
@@ -853,14 +891,24 @@ export default function GameScreen({ config, socket, onResult }: Props) {
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative', background: '#020208' }}>
       <Canvas shadows camera={{ fov: 70, near: 0.1, far: 800, position: [0, 5, -8] }} gl={{ antialias: true }}>
-        <ambientLight intensity={0.25} color="#2244aa" />
-        <directionalLight position={[20, 40, 10]} intensity={0.8} castShadow shadow-mapSize={[1024, 1024]} color="#aaccff" />
-        <directionalLight position={[-10, 20, -5]} intensity={0.3} color="#ffaacc" />
-        <fog attach="fog" args={['#020208', 200, 500]} />
-        <mesh position={[0, 0, 200]}>
-          <sphereGeometry args={[600, 16, 16]} />
-          <meshBasicMaterial color="#020208" side={2} />
-        </mesh>
+        <ambientLight intensity={0.14} color={CYBER.ambient} />
+        <hemisphereLight intensity={0.28} color={CYBER.hemiSky} groundColor={CYBER.hemiGround} />
+        {/* Shadow camera tightened to the strip of track actually on screen —
+            the old default frustum spread 1024px over the whole 800-unit far
+            plane, so the shadows were mush. */}
+        <directionalLight
+          position={[18, 34, 12]} intensity={1.65} color={CYBER.key}
+          castShadow shadow-mapSize={[1024, 1024]}
+          shadow-camera-left={-30} shadow-camera-right={30}
+          shadow-camera-top={60} shadow-camera-bottom={-40}
+          shadow-camera-near={1} shadow-camera-far={140}
+        />
+        <directionalLight position={[-14, 16, -6]} intensity={0.55} color={CYBER.fill} />
+        {/* Pulled in from 200/500: the fade now starts before the parallax
+            shapes do, which is what gives the scene depth instead of a wall of
+            floating debris. */}
+        <fog attach="fog" args={[CYBER.fog, 28, 220]} />
+        <HorizonDome />
 
         <ParallaxBackground physRef={physRef} />
         <Track course={course} />
