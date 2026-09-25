@@ -14,8 +14,8 @@ const TIERS = [
   { id: 'free',     label: 'Free',    entryCents: 0,    payoutCents: 0,    desc: 'No entry fee' },
   { id: 'quick',    label: '5 PC',    entryCents: 50,   payoutCents: 98,   desc: 'lobby · 2% rake' },
   { id: 'standard', label: '20 PC',   entryCents: 200,  payoutCents: 392,  desc: 'lobby · 2% rake' },
-  { id: 'high',     label: '100 PC',  entryCents: 1000, payoutCents: 1960, desc: 'lobby · 2% rake' },
-  { id: 'elite',    label: '500 PC',  entryCents: 5000, payoutCents: 9800, desc: 'lobby · 2% rake' },
+  { id: 'high',     label: '100 PC',  entryCents: 1000, payoutCents: 2940, desc: 'lobby · 2% rake' },
+  { id: 'elite',    label: '500 PC',  entryCents: 5000, payoutCents: 14700, desc: 'lobby · 2% rake' },
 ];
 
 function pc(cents: number) { return (cents / 10).toFixed(0) + ' PC'; }
