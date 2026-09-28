@@ -14,8 +14,8 @@
  */
 
 import {
-  LANES, LANE_W, LANE_CHANGE_S, RESET_SPEED, SPEED_CAP, SHARD_SPEED, RACE_MS,
-  RunCourse, HazardRow, laneX,
+  LANES, LANE_W, LANE_CHANGE_S, RESET_SPEED, RACE_MS,
+  speedCeilingAt, RunCourse, HazardRow, laneX,
 } from './RunnerCourse';
 
 /** 120Hz. Fine enough that a 0.18s lane change resolves smoothly. */
@@ -33,11 +33,12 @@ export const HIT_DIST = LANE_W / 2 + PLAYER_HALF;
 /** Speed gained per second of clean running. */
 export const CHARGE_RATE = 1.8;
 /**
- * Fraction of speed kept through a hit. Multiplicative rather than a flat
- * subtraction, so the cost scales with how much was being carried: a fast run
- * loses more, which is what stops charging from being free.
+ * Fraction of speed kept through a hit. Raised from 0.55 now that the score is
+ * tokens rather than distance: contact no longer has to carry the whole job of
+ * separating players, and a penalty that large was making two unlucky hits
+ * outweigh a 50ms reaction advantage.
  */
-export const CONTACT_RETAIN = 0.55;
+export const CONTACT_RETAIN = 0.78;
 /** Grace after contact, so one row cannot be charged twice. */
 export const CONTACT_IMMUNE_S = 0.35;
 
@@ -55,6 +56,10 @@ export interface RunnerState {
   immuneS: number;
   /** Seconds since the last contact — what the speed charge is built from. */
   cleanS: number;
+  /** Tokens collected. This is the score. */
+  tokens: number;
+  /** Tokens gone past, taken or not — the denominator for accuracy. */
+  tokensSeen: number;
   /** Longest clean stretch of the run, in seconds. For the HUD and results. */
   bestCleanS: number;
   elapsedS: number;
@@ -72,6 +77,7 @@ export function initialState(): RunnerState {
     z: 0, speed: RESET_SPEED,
     lanePos: mid, laneTarget: mid,
     immuneS: 0, cleanS: 0, bestCleanS: 0,
+    tokens: 0, tokensSeen: 0,
     elapsedS: 0, shards: 0, crashes: 0,
     rowCursor: 0, shardCursor: 0,
     finished: false,
@@ -103,21 +109,24 @@ export function step(
   if (s.lanePos < s.laneTarget) s.lanePos = Math.min(s.laneTarget, s.lanePos + laneStep);
   else if (s.lanePos > s.laneTarget) s.lanePos = Math.max(s.laneTarget, s.lanePos - laneStep);
 
-  // ── Charge ──
+  // ── Charge, clamped to what the course ahead can actually be cleared at ──
   s.cleanS += dt;
   if (s.cleanS > s.bestCleanS) s.bestCleanS = s.cleanS;
-  s.speed = Math.min(SPEED_CAP, s.speed + CHARGE_RATE * dt);
+  const ceiling = speedCeilingAt(course, s.z, s.rowCursor);
+  s.speed = Math.min(ceiling, s.speed + CHARGE_RATE * dt);
   if (s.immuneS > 0) s.immuneS = Math.max(0, s.immuneS - dt);
 
   const z0 = s.z;
   s.z += s.speed * dt;
 
-  // ── Shards crossed this step ──
-  while (s.shardCursor < course.shards.length && course.shards[s.shardCursor].z <= s.z) {
-    const sh = course.shards[s.shardCursor];
-    if (sh.z >= z0 && Math.abs(s.lanePos - sh.lane) * LANE_W < HIT_DIST) {
-      s.shards++; ev.picked++;
-      s.speed = Math.min(SPEED_CAP, s.speed + SHARD_SPEED);
+  // ── Tokens crossed this step ──
+  while (s.shardCursor < course.tokens.length && course.tokens[s.shardCursor].z <= s.z) {
+    const tk = course.tokens[s.shardCursor];
+    if (tk.z >= z0) {
+      s.tokensSeen++;
+      // Collected on lane overlap, same band as a hazard — so threading a gap
+      // and taking the token are the same act of precision.
+      if (Math.abs(s.lanePos - tk.lane) * LANE_W < HIT_DIST) { s.tokens++; ev.picked++; }
     }
     s.shardCursor++;
   }

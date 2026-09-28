@@ -103,8 +103,53 @@ export const COURSE_LEN = Math.ceil(SPEED_CAP * (RACE_MS / 1000) * 1.12);
  */
 export const RAMP_FULL_Z = 3000;
 
-/** Collecting a shard adds this directly to speed — charge, not currency. */
-export const SHARD_SPEED = 1.5;
+/**
+ * The window the speed cap holds rows to, and the single most sensitive number
+ * in the game.
+ *
+ * It must sit at what an EXCELLENT human can do, not an average one. Capping to
+ * SAFE_WINDOW_S * 1.3 = 0.56s made every row comfortable for everybody, nobody
+ * was ever challenged, and head-to-head collapsed to a coin flip at 50.7%.
+ * Capping too high the other way is what produced unclearable rows in the first
+ * place.
+ *
+ * A lane change takes LANE_CHANGE_S = 0.18s of travel, so this is that plus the
+ * reaction of a very good player. Anyone slower crashes at the cap, the
+ * thermostat drops them, and they settle at a speed that IS achievable for them
+ * — which is the whole point. Nothing is impossible for a human; plenty is
+ * impossible for a human going too fast for their own reactions.
+ */
+export const CEILING_WINDOW_S = 0.30;
+
+/** How far ahead the speed cap looks for the tightest upcoming row. */
+export const CEILING_LOOKAHEAD = 70;
+
+/**
+ * Fastest the course permits at this depth, given what is coming up.
+ *
+ * This is the fix for the game's biggest problem. Speed used to charge past
+ * what the spacing could support: at a 0.15s reaction a player ended up taking
+ * 37% of rows at a speed that could not clear them, and the better the player
+ * the worse it got, because charging higher bought more impossible rows.
+ * Whether you ate one of those depended on where you happened to be rather than
+ * on how you played, which turned skill into noise — measured signal-to-noise
+ * was 0.6, and the weaker of two players won 36% of the time.
+ *
+ * Capping here means nothing is ever unclearable. It also means distance is
+ * nearly the same for everyone, which is why tokens rather than distance are
+ * what the run is scored on.
+ */
+export function speedCeilingAt(course: RunCourse, z: number, fromRow = 0): number {
+  let minGap = Infinity;
+  for (let i = fromRow; i < course.rows.length; i++) {
+    const r = course.rows[i];
+    if (r.z < z) continue;
+    if (r.z > z + CEILING_LOOKAHEAD) break;
+    if (r.gap < minGap) minGap = r.gap;
+  }
+  if (minGap === Infinity) return SPEED_CAP;
+  return Math.min(SPEED_CAP, minGap / CEILING_WINDOW_S);
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -116,17 +161,22 @@ export interface HazardRow {
   /** Lane indices 0..LANES-1 that are impassable. Never all of them. */
   blocked: number[];
   kind: HazardKind;
+  /** Distance back to the previous row — the window this row gives you. */
+  gap: number;
 }
 
-export interface Shard {
+export interface Token {
   z: number;
   lane: number;
 }
 
+/** Distance between tokens along a trail. */
+export const TOKEN_SPACING = 4;
+
 export interface RunCourse {
   code: string;
   rows: HazardRow[];
-  shards: Shard[];
+  tokens: Token[];
   /** Lateral sway of the track centre; lanes are laid out either side of it. */
   sway: [number, number, number];
   length: number;
@@ -218,7 +268,7 @@ export function generateRun(code: string): RunCourse {
   const course: RunCourse = {
     code,
     rows: [],
-    shards: [],
+    tokens: [],
     sway: [rng() * Math.PI * 2, rng() * Math.PI * 2, rng() * Math.PI * 2],
     length: COURSE_LEN,
   };
@@ -252,11 +302,11 @@ export function generateRun(code: string): RunCourse {
     }
     if (!chosen) continue;
 
-    const row: HazardRow = { z, blocked: chosen, kind: KINDS[Math.floor(rng() * KINDS.length)] };
+    const row: HazardRow = { z, blocked: chosen, kind: KINDS[Math.floor(rng() * KINDS.length)], gap };
     course.rows.push(row);
 
     const nowOpen = openLanes(chosen);
-    placeShards(course, rng, z, gap, nowOpen, prevOpen);
+    placeTokens(course, rng, z - gap, z, nowOpen);
     prevOpen = nowOpen;
   }
 
@@ -273,45 +323,45 @@ function buildCandidates(wantTwo: boolean, rng: () => number): number[][] {
 }
 
 /**
- * Shards pay out boost, and the point of them is to make the player choose.
+ * Tokens are what a run is scored on, and they are laid as TRAILS between rows
+ * rather than one per row.
  *
- * The obvious placement — mid-gap, in a lane off the racing line — does not
- * work here, and the reason is worth recording. Late-game gaps run about 20
- * units and a single lane change at TOP_SPEED needs 18.5, so a shard half a gap
- * back leaves 7-13 units to divert into. Two thirds of shards came out
- * physically uncollectable that way: not a risk, just scenery.
+ * The reason is statistical, not decorative. With one token per open lane a run
+ * turned on about 155 scoring events, and noise from ordinary misreads was
+ * comparable to the gap between skill levels — the better player won only 74%
+ * of the time. Noise averages down with the square root of the number of
+ * independent events, so laying tokens every few units raises the count to
+ * roughly 850 and pulls the signal clear of it.
  *
- * So a shard goes in a lane that is already open at the row it precedes, which
- * makes it reachable by the same guarantee that makes the row fair. Where a row
- * leaves two lanes open, both are safe right now and the shard decides which one
- * is worth taking — the cost is paid in where that leaves you for the row after,
- * not in an impossible sidestep. Placement is still verified rather than
- * assumed, and a shard that fails the check is dropped.
+ * Each stretch between two rows gets a trail in ONE lane. Two thirds of the
+ * time that lane is open at the row ahead, so following it is compatible with
+ * surviving; the rest of the time it is blocked ahead, so the trail runs out
+ * and you have to leave it. That is the decision the score is made of.
  */
-function placeShards(
+function placeTokens(
   course: RunCourse, rng: () => number,
-  rowZ: number, gap: number, nowOpen: number[], prevOpen: number[],
+  prevZ: number, rowZ: number, nowOpen: number[],
 ) {
-  if (rng() > 0.5) return;
+  if (prevZ <= 0) return;
+  const blockedAhead = [0, 1, 2].filter(l => !nowOpen.includes(l));
+  const temptation = blockedAhead.length > 0 && rng() < 0.34;
+  const lane = temptation
+    ? blockedAhead[Math.floor(rng() * blockedAhead.length)]
+    : nowOpen[Math.floor(rng() * nowOpen.length)];
 
-  // Prefer an open lane that was NOT open last row — that one costs a move.
-  const risky = nowOpen.filter(l => !prevOpen.includes(l));
-  const pool  = risky.length ? risky : nowOpen;
-  const lane  = pool[Math.floor(rng() * pool.length)];
-
-  // Sits just ahead of the row so it reads as part of threading the gap.
-  const z = rowZ - gap * 0.18;
-  const reach = z - (rowZ - gap);
-  if (!prevOpen.some(l => reachable(l, lane, reach))) return;
-
-  course.shards.push({ z, lane });
+  // A trail that dead-ends stops short of the row, so it reads as running out
+  // rather than as luring you into something you could not see.
+  const end = temptation ? rowZ - TOKEN_SPACING * 1.6 : rowZ;
+  for (let z = prevZ + TOKEN_SPACING; z < end; z += TOKEN_SPACING) {
+    course.tokens.push({ z, lane });
+  }
 }
 
 // ── Audit ─────────────────────────────────────────────────────────────────────
 
 export interface CourseAudit {
   rows: number;
-  shards: number;
+  tokens: number;
   fullyBlocked: number;
   /** Rows a player could be forced into with nowhere reachable to go. */
   unreachable: number;
@@ -346,7 +396,7 @@ export function auditCourse(course: RunCourse): CourseAudit {
 
   return {
     rows: course.rows.length,
-    shards: course.shards.length,
+    tokens: course.tokens.length,
     fullyBlocked,
     unreachable,
     minGap: minGap === Infinity ? 0 : minGap,

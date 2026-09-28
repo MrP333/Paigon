@@ -20,6 +20,20 @@ import {
 const VIEW_AHEAD  = 130;
 const VIEW_BEHIND = 25;
 
+/**
+ * Which way lane index runs on screen.
+ *
+ * The chase camera looks along +z, which flips the world x axis across the
+ * view: +x lands on the LEFT of the screen. Lane index rises with x (see
+ * laneX), so lane 2 is screen-left and lane 0 is screen-right, and mapping A to
+ * a decreasing lane index walked the player right.
+ *
+ * Corrected here rather than by negating laneX, because which side a lane
+ * appears on is a fact about where the camera sits, not about the course —
+ * GameScreen.tsx resolves the same flip the same way, with KeyA adding to x.
+ */
+const STEER_SCREEN_LEFT: -1 | 1 = 1;
+
 // ── Track ─────────────────────────────────────────────────────────────────────
 
 function Track({ course, zRef }: { course: RunCourse; zRef: React.MutableRefObject<number> }) {
@@ -63,7 +77,7 @@ function Hazards({ course, zRef }: { course: RunCourse; zRef: React.MutableRefOb
 
   const z = bucket * BUCKET;
   const rows = course.rows.filter(r => r.z > z - 6 && r.z < z + VIEW_AHEAD);
-  const shards = course.shards.filter(s => s.z > z - 6 && s.z < z + VIEW_AHEAD);
+  const tokens = course.tokens.filter((t: {z:number;lane:number}) => t.z > z - 6 && t.z < z + VIEW_AHEAD);
 
   return (
     <>
@@ -77,10 +91,10 @@ function Hazards({ course, zRef }: { course: RunCourse; zRef: React.MutableRefOb
           ))}
         </group>
       ))}
-      {shards.map(s => (
-        <mesh key={`${s.z}-${s.lane}`} position={[laneX(course, s.lane, s.z), 0.8, s.z]}>
-          <octahedronGeometry args={[0.45]} />
-          <meshStandardMaterial color="#e6c84a" emissive={new Color('#e6c84a')} emissiveIntensity={0.8} />
+      {tokens.map((t: {z:number;lane:number}) => (
+        <mesh key={`${t.z}-${t.lane}`} position={[laneX(course, t.lane, t.z), 0.8, t.z]}>
+          <octahedronGeometry args={[0.5]} />
+          <meshStandardMaterial color="#ffd76a" emissive={new Color('#ffd76a')} emissiveIntensity={1.1} />
         </mesh>
       ))}
     </>
@@ -118,8 +132,8 @@ function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud }: LoopProps) {
       const i = inputRef.current;
       // Steering is edge-triggered: holding left must not walk across lanes.
       let steer: -1 | 0 | 1 = 0;
-      if (i.left && !prevLeft.current) steer = -1;
-      else if (i.right && !prevRight.current) steer = 1;
+      if (i.left && !prevLeft.current) steer = STEER_SCREEN_LEFT;
+      else if (i.right && !prevRight.current) steer = -STEER_SCREEN_LEFT as -1 | 1;
       prevLeft.current = i.left;
       prevRight.current = i.right;
 
@@ -174,7 +188,7 @@ export default function RunnerScreen({ roomCode = 'GREYBOX', onExit }: {
   const zRef = useRef(0);
   const inputRef = useRef({ left: false, right: false });
 
-  const [hud, setHud] = useState({ z: 0, t: 0, clean: 0, shards: 0, crashes: 0, speed: RESET_SPEED });
+  const [hud, setHud] = useState({ z: 0, t: 0, clean: 0, tokens: 0, seen: 0, crashes: 0, speed: RESET_SPEED });
   const [final, setFinal] = useState<RunnerState | null>(null);
   // Remounts the loop on restart; without it the loop's `done` latch stays set
   // and a second run never advances.
@@ -219,20 +233,20 @@ export default function RunnerScreen({ roomCode = 'GREYBOX', onExit }: {
           onEnd={setFinal}
           onHud={s => setHud({
             z: s.z, t: s.elapsedS, clean: s.cleanS,
-            shards: s.shards, crashes: s.crashes, speed: s.speed,
+            tokens: s.tokens, seen: s.tokensSeen, crashes: s.crashes, speed: s.speed,
           })}
         />
       </Canvas>
 
       {/* HUD — numbers only, on purpose */}
       <div style={{ ...mono, position: 'absolute', top: 14, left: 16, fontSize: 13, lineHeight: 1.6 }}>
-        <div style={{ fontSize: 38, fontWeight: 800, letterSpacing: '-.02em' }}>
-          {hud.speed.toFixed(0)}<span style={{ fontSize: 13, opacity: .6, fontWeight: 400 }}> u/s</span>
+        <div style={{ fontSize: 42, fontWeight: 800, letterSpacing: '-.02em', color: '#ffd76a' }}>
+          {hud.tokens}<span style={{ fontSize: 14, opacity: .55, fontWeight: 400, color: '#dfe6ee' }}> / {hud.seen}</span>
         </div>
-        <div style={{ fontSize: 20, fontWeight: 600 }}>{hud.z.toFixed(0)}<span style={{ fontSize: 12, opacity: .6 }}>u</span></div>
+        <div style={{ opacity: .55, marginTop: -4, marginBottom: 6 }}>tokens</div>
         <div>t {Math.max(0, RACE_MS / 1000 - hud.t).toFixed(1)}s</div>
-        <div>clean {hud.clean.toFixed(1)}s</div>
-        <div>shards {hud.shards} · contacts {hud.crashes}</div>
+        <div>{hud.speed.toFixed(0)} u/s · {hud.z.toFixed(0)}u</div>
+        <div>clean {hud.clean.toFixed(1)}s · contacts {hud.crashes}</div>
         <div style={{ opacity: .45, marginTop: 4 }}>A/D or arrows — that is the whole control scheme</div>
       </div>
 
@@ -242,9 +256,12 @@ export default function RunnerScreen({ roomCode = 'GREYBOX', onExit }: {
           alignItems: 'center', justifyContent: 'center', background: 'rgba(10,10,15,.88)', gap: 10,
         }}>
           <div style={{ fontSize: 13, letterSpacing: '.24em', opacity: .55 }}>RUN COMPLETE</div>
-          <div style={{ fontSize: 54, fontWeight: 800 }}>{final.z.toFixed(0)}<span style={{ fontSize: 18, opacity: .6 }}>u</span></div>
-          <div style={{ opacity: .75 }}>
-            {final.shards} shards · {final.crashes} contacts · best clean {final.bestCleanS.toFixed(1)}s
+          <div style={{ fontSize: 60, fontWeight: 800, color: '#ffd76a' }}>
+            {final.tokens}<span style={{ fontSize: 20, opacity: .55, color: '#dfe6ee' }}> / {final.tokensSeen}</span>
+          </div>
+          <div style={{ opacity: .55, marginTop: -6, letterSpacing: '.2em', fontSize: 12 }}>TOKENS</div>
+          <div style={{ opacity: .75, marginTop: 8 }}>
+            {final.z.toFixed(0)}u · {final.crashes} contacts · best clean {final.bestCleanS.toFixed(1)}s
           </div>
           <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
             <button onClick={() => {
