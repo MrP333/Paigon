@@ -7,12 +7,12 @@
  * code alone and check a reported distance against what the course actually
  * permits.
  *
- * The central invariant is SOLVABILITY AT BASE SPEED: from any lane a player can
- * legally occupy, some open lane in the next hazard row is reachable at the
- * speed the game moves you along at. Nobody is ever forced into a gap they
- * cannot make. Boost is the one way to exceed that speed, it is opt-in, and its
- * risk belongs to whoever spends it. See `auditCourse`, which re-derives this
- * from the emitted course and is run over hundreds of seeds in the tests.
+ * The central invariant is RECOVERABILITY: from any lane, at the speed the game
+ * resets you to after contact, some open lane in the next row is always
+ * reachable. However badly a run is going, the next row is never a trap. Speed
+ * above reset is earned by clean riding, and the risk of carrying it is the
+ * player's. See `auditCourse`, which re-derives this from the emitted course and
+ * is run over hundreds of seeds in the tests.
  */
 
 // ── Tuning ────────────────────────────────────────────────────────────────────
@@ -21,27 +21,33 @@ export const LANES  = 3;
 export const LANE_W = 3.2;
 
 /**
- * Base speed is not under the player's control, and that is a correction to an
- * earlier design rather than an oversight.
+ * Speed is earned by riding clean and lost on contact — there is no throttle and
+ * no meter. Two earlier designs died to measurement before this one:
  *
- * Throttle originally moved speed between 18 and 36. Measured against bots with
- * human reaction latencies from 0.10s to 0.50s, holding it won by 78-101% in
- * every single case — a player crashing 6.8 times a run still beat a clean
- * cruiser, because doubling your speed dwarfs any bearable crash penalty.
- * Breaking even would have needed ~244 units per crash, about 5.7 seconds of
- * stun, which is nobody's idea of a good time. A throttle that is always
- * correct to hold is not a decision; it is a key you tape down.
+ * Throttle moving speed between 18 and 36 was strictly dominant. Against bots at
+ * reaction latencies 0.10s-0.50s, holding it won by 78-101% every time, because
+ * doubling speed dwarfs any bearable crash penalty. A key that is always correct
+ * to hold is not a decision.
  *
- * So speed is fixed and the throttle spends BOOST from a meter that shards
- * refill. That makes it a question of *where* to spend rather than whether —
- * burn it on an open stretch, or gamble it into a tight one where the window
- * drops below what a lane change costs and a crash takes the whole meter.
+ * A spendable boost meter fixed that but was a resource to babysit, which does
+ * not belong in this game.
+ *
+ * What is left is a thermostat. Clean running charges speed; contact drops it.
+ * The course's own spacing sets a clearable ceiling that declines as the ramp
+ * tightens, so every player oscillates around the speed where their reaction
+ * gives out — which is exactly their skill — and distance covered measures it.
+ * Nothing to manage, no score to max out.
  */
-export const BASE_SPEED  = 32;
-export const BOOST_SPEED = 10;
-export const TOP_SPEED   = BASE_SPEED + BOOST_SPEED;
-/** Seconds of boost the meter holds. Roughly seven shards to fill from empty. */
-export const BOOST_CAP_S = 4.0;
+/** Speed dropped to after contact, and the speed the run opens at. */
+export const RESET_SPEED = 20;
+/**
+ * Absolute bound, for server sanity checks only — the thermostat, not this,
+ * is what actually limits a run. Set high enough not to bind: a 0.50s player
+ * peaks around 67 regardless, and only near-perfect play approaches it. An
+ * earlier value of 70 was being hit by everybody, which reintroduced exactly
+ * the ceiling Momentum exists to avoid.
+ */
+export const SPEED_CAP = 110;
 
 export const RACE_MS = 90_000;
 
@@ -51,27 +57,30 @@ export const LANE_CHANGE_S = 0.18;
 export const REACT_MARGIN_S = 0.25;
 
 /**
- * How far ahead a hazard is legible. Fixed in units, deliberately: at BASE_SPEED
- * that is 0.88s of thinking time and at TOP_SPEED it is 0.67s. Spending boost is
- * the player choosing where on that scale to live.
+ * How far ahead a hazard is legible. Fixed in units, so reaction time is
+ * LEAD / speed and shrinks as you charge: 1.4s at reset speed, 0.86s at the
+ * clearable ceiling. Going faster is always the player buying distance with
+ * thinking time.
  */
 export const TELEGRAPH_LEAD = 28;
 
+/** One lane change, decided and completed. The unit everything is sized against. */
+export const SAFE_WINDOW_S = LANE_CHANGE_S + REACT_MARGIN_S;
+
 /**
- * Tightest hazard spacing the ramp will produce. Derived from BASE_SPEED, not
- * TOP_SPEED, and that distinction is the whole design.
+ * Tightest hazard spacing the ramp will produce, and the number that sets where
+ * the thermostat settles.
  *
- * One lane change needs LANE_CHANGE_S + REACT_MARGIN_S = 0.43s, so at 32 u/s
- * the floor is 13.8 units. The course is therefore always clearable at base
- * speed — nobody is ever forced into a gap they cannot make.
+ * The hard fairness floor is RESET_SPEED * SAFE_WINDOW_S = 8.6 units: below that
+ * a player could crash and be unable to clear the very next row, which would be
+ * a genuine trap. 14 sits well clear of it — at reset speed every row gives 0.7s,
+ * so recovery is always possible.
  *
- * Boosting is a different matter. At 42 u/s the tightest rows give 0.33s, which
- * is under what a lane change costs, so spending boost into a late tight stretch
- * will put you into a wall. That is not the course being unfair: base speed
- * always works, the telegraph shows the stretch coming, and pressing the key is
- * the player's own call. Deriving the floor from TOP_SPEED instead made every
- * window a comfortable 0.61s and flattened the difference between a 0.15s and a
- * 0.45s reaction to 2.6% — no game left in it.
+ * The gameplay consequence is the ceiling it implies: 14 / 0.43 = 32.5 u/s is
+ * the fastest the tightest rows can be cleared at. Charge past that and the late
+ * course starts taking hits off you. Since the ramp closes spacing from 48 down
+ * to 14, the clearable ceiling falls throughout the run while your speed climbs,
+ * and where those two cross is the race.
  */
 export const MIN_GAP = 14;
 /** Opening spacing, before the difficulty ramp closes it down. */
@@ -80,9 +89,22 @@ export const EASY_GAP = 48;
 export const START_CLEAR = 60;
 
 /** Generated past the furthest anyone could travel, with headroom. */
-export const COURSE_LEN = Math.ceil(TOP_SPEED * (RACE_MS / 1000) * 1.1);
+export const COURSE_LEN = Math.ceil(SPEED_CAP * (RACE_MS / 1000) * 1.12);
 
-export const SHARD_BOOST_S = 0.6;
+/**
+ * Where the difficulty ramp tops out. Deliberately far short of COURSE_LEN,
+ * which is a generation bound rather than a distance anyone reaches: tying the
+ * ramp to it stretched full difficulty out past 6900 units when even a perfect
+ * run stops around 5000, so the tightest rows were never encountered and the
+ * thermostat had nothing to push back against.
+ *
+ * Ramping by distance rather than by time also means going fast brings the hard
+ * section closer, so speed is its own counterweight.
+ */
+export const RAMP_FULL_Z = 3000;
+
+/** Collecting a shard adds this directly to speed — charge, not currency. */
+export const SHARD_SPEED = 1.5;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -161,17 +183,17 @@ function smoothstep(e0: number, e1: number, x: number): number {
 
 /** 0 at the start line, 1 once the course is at full difficulty. */
 export function rampAt(z: number): number {
-  return smoothstep(START_CLEAR, COURSE_LEN * 0.78, z);
+  return smoothstep(START_CLEAR, RAMP_FULL_Z, z);
 }
 
 /**
- * Can a player in lane `from` reach lane `to` across `gap` units at BASE_SPEED?
- * Base rather than top, because that is the speed the game guarantees: boost is
- * opt-in and its risk belongs to whoever spends it.
+ * Can a player in lane `from` reach lane `to` across `gap` units at RESET_SPEED?
+ * Reset rather than current speed, because that is the only speed the game hands
+ * you. Everything above it you charged up yourself, and the risk comes with it.
  */
 export function reachable(from: number, to: number, gap: number): boolean {
   const need = Math.abs(from - to) * LANE_CHANGE_S + REACT_MARGIN_S;
-  return gap / BASE_SPEED >= need;
+  return gap / RESET_SPEED >= need;
 }
 
 function openLanes(blocked: number[]): number[] {
@@ -294,8 +316,10 @@ export interface CourseAudit {
   /** Rows a player could be forced into with nowhere reachable to go. */
   unreachable: number;
   minGap: number;
-  /** Tightest reaction window the course can present, in seconds at TOP_SPEED. */
+  /** Reaction window the tightest row gives at reset speed. Must clear SAFE_WINDOW_S. */
   tightestWindowS: number;
+  /** Fastest the tightest row can be cleared at — where the thermostat caps out. */
+  clearableCeiling: number;
 }
 
 /**
@@ -326,6 +350,7 @@ export function auditCourse(course: RunCourse): CourseAudit {
     fullyBlocked,
     unreachable,
     minGap: minGap === Infinity ? 0 : minGap,
-    tightestWindowS: (minGap === Infinity ? 0 : minGap) / TOP_SPEED,
+    tightestWindowS: (minGap === Infinity ? 0 : minGap) / RESET_SPEED,
+    clearableCeiling: (minGap === Infinity ? 0 : minGap) / SAFE_WINDOW_S,
   };
 }

@@ -11,7 +11,7 @@ import { Vector3, Color } from 'three';
 
 import {
   generateRun, laneX, trackCenter, RunCourse,
-  LANES, LANE_W, BASE_SPEED, TOP_SPEED, BOOST_CAP_S, RACE_MS,
+  LANES, LANE_W, RESET_SPEED, RACE_MS,
 } from '../engine/RunnerCourse';
 import {
   initialState, step, playerX, RunnerState, RunnerInput, FIXED_DT,
@@ -92,7 +92,7 @@ function Hazards({ course, zRef }: { course: RunCourse; zRef: React.MutableRefOb
 interface LoopProps {
   course: RunCourse;
   stateRef: React.MutableRefObject<RunnerState>;
-  inputRef: React.MutableRefObject<{ left: boolean; right: boolean; boost: boolean }>;
+  inputRef: React.MutableRefObject<{ left: boolean; right: boolean }>;
   zRef: React.MutableRefObject<number>;
   onEnd: (s: RunnerState) => void;
   onHud: (s: RunnerState) => void;
@@ -123,7 +123,7 @@ function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud }: LoopProps) {
       prevLeft.current = i.left;
       prevRight.current = i.right;
 
-      const input: RunnerInput = { steer, throttle: i.boost };
+      const input: RunnerInput = { steer };
       step(course, s, input);
       acc.current -= FIXED_DT;
     }
@@ -149,9 +149,12 @@ function Player({ course, stateRef }: { course: RunCourse; stateRef: React.Mutab
     if (!ref.current) return;
     ref.current.position.set(playerX(course, s), 0.5, s.z);
     const m = ref.current.material;
-    m.emissiveIntensity = s.stunS > 0 ? 2.2 : s.boosting ? 1.6 : 0.8;
-    m.color.set(s.stunS > 0 ? '#ff3b30' : '#41d6ff');
-    m.emissive.set(s.stunS > 0 ? '#ff3b30' : '#41d6ff');
+    // Brightness tracks charge, so how well the run is going is readable off
+    // the ball itself rather than off a meter.
+    const hot = Math.min(1, Math.max(0, (s.speed - RESET_SPEED) / 18));
+    m.emissiveIntensity = s.immuneS > 0 ? 2.4 : 0.5 + hot * 1.6;
+    m.color.set(s.immuneS > 0 ? '#ff3b30' : '#41d6ff');
+    m.emissive.set(s.immuneS > 0 ? '#ff3b30' : '#41d6ff');
   });
   return (
     <mesh ref={ref} castShadow>
@@ -169,9 +172,9 @@ export default function RunnerScreen({ roomCode = 'GREYBOX', onExit }: {
   const course = useMemo(() => generateRun(roomCode), [roomCode]);
   const stateRef = useRef<RunnerState>(initialState());
   const zRef = useRef(0);
-  const inputRef = useRef({ left: false, right: false, boost: false });
+  const inputRef = useRef({ left: false, right: false });
 
-  const [hud, setHud] = useState({ z: 0, t: 0, boost: 0, shards: 0, crashes: 0, speed: BASE_SPEED });
+  const [hud, setHud] = useState({ z: 0, t: 0, clean: 0, shards: 0, crashes: 0, speed: RESET_SPEED });
   const [final, setFinal] = useState<RunnerState | null>(null);
   // Remounts the loop on restart; without it the loop's `done` latch stays set
   // and a second run never advances.
@@ -181,14 +184,14 @@ export default function RunnerScreen({ roomCode = 'GREYBOX', onExit }: {
     const down = (e: KeyboardEvent) => {
       if (e.code === 'KeyA' || e.code === 'ArrowLeft')  inputRef.current.left = true;
       if (e.code === 'KeyD' || e.code === 'ArrowRight') inputRef.current.right = true;
-      if (e.code === 'Space' || e.code === 'KeyW')      { inputRef.current.boost = true; e.preventDefault(); }
+      if (e.code === 'Space') e.preventDefault();
     };
     const up = (e: KeyboardEvent) => {
       if (e.code === 'KeyA' || e.code === 'ArrowLeft')  inputRef.current.left = false;
       if (e.code === 'KeyD' || e.code === 'ArrowRight') inputRef.current.right = false;
-      if (e.code === 'Space' || e.code === 'KeyW')      inputRef.current.boost = false;
+
     };
-    const blur = () => { inputRef.current = { left: false, right: false, boost: false }; };
+    const blur = () => { inputRef.current = { left: false, right: false }; };
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
     window.addEventListener('blur', blur);
@@ -215,25 +218,22 @@ export default function RunnerScreen({ roomCode = 'GREYBOX', onExit }: {
           course={course} stateRef={stateRef} inputRef={inputRef} zRef={zRef}
           onEnd={setFinal}
           onHud={s => setHud({
-            z: s.z, t: s.elapsedS, boost: s.boostS,
-            shards: s.shards, crashes: s.crashes, speed: s.speed + (s.boosting ? TOP_SPEED - BASE_SPEED : 0),
+            z: s.z, t: s.elapsedS, clean: s.cleanS,
+            shards: s.shards, crashes: s.crashes, speed: s.speed,
           })}
         />
       </Canvas>
 
       {/* HUD — numbers only, on purpose */}
       <div style={{ ...mono, position: 'absolute', top: 14, left: 16, fontSize: 13, lineHeight: 1.6 }}>
-        <div style={{ fontSize: 30, fontWeight: 700 }}>{hud.z.toFixed(0)}<span style={{ fontSize: 13, opacity: .6 }}>u</span></div>
-        <div>t {Math.max(0, RACE_MS / 1000 - hud.t).toFixed(1)}s</div>
-        <div>speed {hud.speed.toFixed(0)}</div>
-        <div>shards {hud.shards} · crashes {hud.crashes}</div>
-        <div style={{ marginTop: 6, width: 150, height: 7, background: '#23232c', borderRadius: 4 }}>
-          <div style={{
-            width: `${(hud.boost / BOOST_CAP_S) * 100}%`, height: '100%',
-            background: hud.boost > 0 ? '#e6c84a' : 'transparent', borderRadius: 4,
-          }} />
+        <div style={{ fontSize: 38, fontWeight: 800, letterSpacing: '-.02em' }}>
+          {hud.speed.toFixed(0)}<span style={{ fontSize: 13, opacity: .6, fontWeight: 400 }}> u/s</span>
         </div>
-        <div style={{ opacity: .45, marginTop: 4 }}>A/D lane · SPACE boost</div>
+        <div style={{ fontSize: 20, fontWeight: 600 }}>{hud.z.toFixed(0)}<span style={{ fontSize: 12, opacity: .6 }}>u</span></div>
+        <div>t {Math.max(0, RACE_MS / 1000 - hud.t).toFixed(1)}s</div>
+        <div>clean {hud.clean.toFixed(1)}s</div>
+        <div>shards {hud.shards} · contacts {hud.crashes}</div>
+        <div style={{ opacity: .45, marginTop: 4 }}>A/D or arrows — that is the whole control scheme</div>
       </div>
 
       {final && (
@@ -243,7 +243,9 @@ export default function RunnerScreen({ roomCode = 'GREYBOX', onExit }: {
         }}>
           <div style={{ fontSize: 13, letterSpacing: '.24em', opacity: .55 }}>RUN COMPLETE</div>
           <div style={{ fontSize: 54, fontWeight: 800 }}>{final.z.toFixed(0)}<span style={{ fontSize: 18, opacity: .6 }}>u</span></div>
-          <div style={{ opacity: .75 }}>{final.shards} shards · {final.crashes} crashes</div>
+          <div style={{ opacity: .75 }}>
+            {final.shards} shards · {final.crashes} contacts · best clean {final.bestCleanS.toFixed(1)}s
+          </div>
           <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
             <button onClick={() => {
               stateRef.current = initialState(); zRef.current = 0;

@@ -7,11 +7,14 @@
  * time and pumps whole FIXED_DT steps; leftover time is carried, never scaled
  * into a step, because a variable dt would make the result framerate-dependent
  * and therefore unverifiable.
+ *
+ * The only input is which lane to be in. Speed charges while clean and drops on
+ * contact, so it is an output of how well the run is going rather than something
+ * the player operates.
  */
 
 import {
-  LANES, LANE_W, BASE_SPEED, BOOST_SPEED, TOP_SPEED, BOOST_CAP_S,
-  LANE_CHANGE_S, SHARD_BOOST_S, RACE_MS,
+  LANES, LANE_W, LANE_CHANGE_S, RESET_SPEED, SPEED_CAP, SHARD_SPEED, RACE_MS,
   RunCourse, HazardRow, laneX,
 } from './RunnerCourse';
 
@@ -27,26 +30,20 @@ export const PLAYER_HALF = 0.85;
  */
 export const HIT_DIST = LANE_W / 2 + PLAYER_HALF;
 
-export const STUN_SPEED = 8;
+/** Speed gained per second of clean running. */
+export const CHARGE_RATE = 1.8;
 /**
- * A crash costs about 55 units once the ramp back up is counted — a little over
- * 2% of a typical run. Deliberately bounded: one mistake must not decide the
- * race, or outcome variance starts to look like chance however deterministic
- * the course is. Ten mistakes, on the other hand, should lose it.
+ * Fraction of speed kept through a hit. Multiplicative rather than a flat
+ * subtraction, so the cost scales with how much was being carried: a fast run
+ * loses more, which is what stops charging from being free.
  */
-export const CRASH_STUN_S = 1.5;
-/** Grace after a hit so one row cannot be charged twice. */
-export const CRASH_IMMUNE_S = 0.4;
-
-/** How fast speed closes on its target. */
-const ACCEL = 26;
-const DECEL = 18;
+export const CONTACT_RETAIN = 0.55;
+/** Grace after contact, so one row cannot be charged twice. */
+export const CONTACT_IMMUNE_S = 0.35;
 
 export interface RunnerInput {
   /** -1 to move left, +1 right, 0 to hold. Edge-triggered by the caller. */
   steer: -1 | 0 | 1;
-  /** Held to spend boost. Does nothing once the meter is empty. */
-  throttle: boolean;
 }
 
 export interface RunnerState {
@@ -55,11 +52,11 @@ export interface RunnerState {
   /** Continuous lane position; integral values are lane centres. */
   lanePos: number;
   laneTarget: number;
-  boostS: number;
-  stunS: number;
   immuneS: number;
-  /** True on steps where boost was actually burning — for HUD and effects. */
-  boosting: boolean;
+  /** Seconds since the last contact — what the speed charge is built from. */
+  cleanS: number;
+  /** Longest clean stretch of the run, in seconds. For the HUD and results. */
+  bestCleanS: number;
   elapsedS: number;
   shards: number;
   crashes: number;
@@ -72,9 +69,9 @@ export interface RunnerState {
 export function initialState(): RunnerState {
   const mid = (LANES - 1) / 2;
   return {
-    z: 0, speed: BASE_SPEED,
+    z: 0, speed: RESET_SPEED,
     lanePos: mid, laneTarget: mid,
-    boostS: 0, stunS: 0, immuneS: 0, boosting: false,
+    immuneS: 0, cleanS: 0, bestCleanS: 0,
     elapsedS: 0, shards: 0, crashes: 0,
     rowCursor: 0, shardCursor: 0,
     finished: false,
@@ -86,10 +83,6 @@ export function playerX(course: RunCourse, s: RunnerState): number {
   return laneX(course, 0, s.z) + s.lanePos * LANE_W;
 }
 
-/**
- * One fixed step. Returns what happened during it so the caller can fire sound
- * and visual effects without re-deriving them.
- */
 export interface StepEvents { crashed: boolean; picked: number; }
 
 export function step(
@@ -101,7 +94,7 @@ export function step(
   const dt = FIXED_DT;
   s.elapsedS += dt;
 
-  // ── Steering. Allowed while stunned: you have to be able to get clear. ──
+  // ── Steering ──
   if (input.steer !== 0) {
     const want = Math.round(s.laneTarget) + input.steer;
     if (want >= 0 && want <= LANES - 1) s.laneTarget = want;
@@ -110,40 +103,21 @@ export function step(
   if (s.lanePos < s.laneTarget) s.lanePos = Math.min(s.laneTarget, s.lanePos + laneStep);
   else if (s.lanePos > s.laneTarget) s.lanePos = Math.max(s.laneTarget, s.lanePos - laneStep);
 
-  // ── Speed ──
-  if (s.stunS > 0) {
-    s.stunS = Math.max(0, s.stunS - dt);
-    s.speed = STUN_SPEED;
-  } else {
-    const rate = BASE_SPEED > s.speed ? ACCEL : DECEL;
-    const d = BASE_SPEED - s.speed;
-    s.speed += Math.sign(d) * Math.min(Math.abs(d), rate * dt);
-  }
+  // ── Charge ──
+  s.cleanS += dt;
+  if (s.cleanS > s.bestCleanS) s.bestCleanS = s.cleanS;
+  s.speed = Math.min(SPEED_CAP, s.speed + CHARGE_RATE * dt);
   if (s.immuneS > 0) s.immuneS = Math.max(0, s.immuneS - dt);
 
-  // Boost burns only while asked for, so banking it through a tight stretch is
-  // a live option rather than something the simulation does on the player's
-  // behalf.
-  let speed = s.speed;
-  s.boosting = false;
-  if (input.throttle && s.boostS > 0 && s.stunS <= 0) {
-    s.boostS = Math.max(0, s.boostS - dt);
-    speed += BOOST_SPEED;
-    s.boosting = true;
-  }
-  // Hard ceiling, so no combination of effects can exceed what the course was
-  // built to remain solvable at.
-  if (speed > TOP_SPEED) speed = TOP_SPEED;
-
   const z0 = s.z;
-  s.z += speed * dt;
+  s.z += s.speed * dt;
 
   // ── Shards crossed this step ──
   while (s.shardCursor < course.shards.length && course.shards[s.shardCursor].z <= s.z) {
     const sh = course.shards[s.shardCursor];
     if (sh.z >= z0 && Math.abs(s.lanePos - sh.lane) * LANE_W < HIT_DIST) {
       s.shards++; ev.picked++;
-      s.boostS = Math.min(s.boostS + SHARD_BOOST_S, BOOST_CAP_S);
+      s.speed = Math.min(SPEED_CAP, s.speed + SHARD_SPEED);
     }
     s.shardCursor++;
   }
@@ -153,12 +127,9 @@ export function step(
     const row = course.rows[s.rowCursor];
     if (row.z >= z0 && s.immuneS <= 0 && hits(row, s.lanePos)) {
       s.crashes++; ev.crashed = true;
-      s.stunS = CRASH_STUN_S;
-      s.immuneS = CRASH_IMMUNE_S;
-      // Losing the banked meter is the real cost of a crash: it scales with
-      // how much you had saved, so it punishes the greedy line proportionally.
-      s.boostS = 0;
-      s.speed = STUN_SPEED;
+      s.immuneS = CONTACT_IMMUNE_S;
+      s.cleanS = 0;
+      s.speed = Math.max(RESET_SPEED, s.speed * CONTACT_RETAIN);
     }
     s.rowCursor++;
   }
