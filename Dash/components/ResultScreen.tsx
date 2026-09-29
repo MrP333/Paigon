@@ -49,11 +49,13 @@ const CSS = `
 
 const PARTICLE_PALETTE = ['#ff0080', '#ff6600', '#ffd700', '#00ff88', '#22d3ee', '#8844ff', '#ffffff'];
 
-function fmt(ms: number | null) {
-  if (ms === null || ms === undefined) return '—';
-  const s = Math.floor(ms / 1000);
-  const d = Math.floor((ms % 1000) / 10);
-  return `${s}.${d.toString().padStart(2, '0')}s`;
+/**
+ * Parity scores on tokens, not elapsed time — every player runs the same 90
+ * seconds, so a finish time carries no information. `null` means the run did
+ * not survive server validation, which is different from scoring zero.
+ */
+function fmtTokens(t: number | null | undefined) {
+  return t === null || t === undefined ? '—' : String(t);
 }
 
 function makeParticles(n: number) {
@@ -89,7 +91,7 @@ interface Props {
 }
 
 export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
-  const { won, myFinishTimeMs, winnerName } = result;
+  const { won, myTokens, winnerName } = result;
 
   useEffect(() => {
     if (document.getElementById('dash-result-css')) return;
@@ -113,9 +115,9 @@ export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
             <div>
               <div style={{ fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.22em', color: 'rgba(0,255,136,.55)', textTransform: 'uppercase' as const, marginBottom: 10, animation: 'dash-stat .35s .2s both' }}>Solo Practice</div>
               <div className="result-time-rainbow" style={{ fontSize: '3.8rem', fontWeight: 900, lineHeight: 1, letterSpacing: '-0.03em', animation: 'dash-score-in .5s .4s cubic-bezier(.34,1.56,.64,1) both' }}>
-                {fmt(myFinishTimeMs)}
+                {fmtTokens(myTokens)}
               </div>
-              <div style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,.3)', marginTop: 6, letterSpacing: '0.06em', animation: 'dash-stat .35s .5s both' }}>finish time</div>
+              <div style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,.3)', marginTop: 6, letterSpacing: '0.06em', animation: 'dash-stat .35s .5s both' }}>tokens collected</div>
             </div>
 
             <button onClick={onPlayAgain} className="result-play-btn" style={{ width: '100%', padding: '14px', color: '#03030a', borderRadius: 12, fontSize: '0.9rem', fontWeight: 800, letterSpacing: '0.04em', cursor: 'pointer', fontFamily: 'inherit', transition: 'transform .12s', animation: 'dash-stat .35s .75s both' }}
@@ -161,9 +163,9 @@ export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
             )}
             <div style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,.25)', marginTop: 8, letterSpacing: '0.04em', animation: 'dash-stat .35s .4s both' }}>
               {won ? (
-                <span className="result-time-rainbow">{fmt(myFinishTimeMs)}</span>
+                <span className="result-time-rainbow">{fmtTokens(myTokens)} tokens</span>
               ) : (
-                `${winnerName} finished first`
+                `${winnerName} collected the most`
               )}
             </div>
           </div>
@@ -172,7 +174,10 @@ export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, animation: 'dash-stat .35s .45s both' }}>
               <div style={{ fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase' as const, color: 'rgba(255,255,255,.2)', marginBottom: 4 }}>Final Standings</div>
               {players.map((p, i) => {
-                const isMe = Math.abs((p.finishTimeMs ?? 0) - (myFinishTimeMs ?? 0)) < 50;
+                // The server marks the recipient's own row. Comparing scores
+                // would tie whenever two runs drew, and comparing names would
+                // break the moment two players picked the same one.
+                const isMe = p.you === true;
                 const RANK_COLORS = ['#ffd700', '#22d3ee', '#ff8c00', '#ff0080'];
                 const rankCol = RANK_COLORS[(p.rank - 1) % RANK_COLORS.length];
                 const rowBg = p.won
@@ -183,7 +188,9 @@ export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
                     <span style={{ fontSize: '0.75rem', fontWeight: 800, fontFamily: 'monospace', color: rankCol, width: 18, flexShrink: 0, textAlign: 'center', textShadow: `0 0 8px ${rankCol}88` }}>#{p.rank}</span>
                     <div style={{ width: 9, height: 9, borderRadius: '50%', background: p.color, flexShrink: 0, boxShadow: `0 0 8px ${p.color}` }} />
                     <span style={{ flex: 1, textAlign: 'left', fontSize: '0.82rem', fontWeight: 700, color: p.won ? '#00ff88' : isMe ? '#22d3ee' : 'rgba(255,255,255,.55)' }}>{p.name}{isMe ? ' (you)' : ''}</span>
-                    <span style={{ fontSize: '0.8rem', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: rankCol }}>{fmt(p.finishTimeMs)}</span>
+                    <span style={{ fontSize: '0.8rem', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: p.tokens === null ? 'rgba(255,255,255,.28)' : rankCol }}>
+                      {fmtTokens(p.tokens)}
+                    </span>
                   </div>
                 );
               })}

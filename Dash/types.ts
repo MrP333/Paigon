@@ -4,7 +4,11 @@ export interface PlayerResult {
   rank: number;
   name: string;
   color: string;
-  finishTimeMs: number;
+  finishTimeMs?: number;
+  /** Parity's score. Null when that player's run failed validation. */
+  tokens?: number | null;
+  /** Set by the server on the row belonging to whoever receives this result. */
+  you?: boolean;
   won: boolean;
 }
 
