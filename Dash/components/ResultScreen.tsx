@@ -198,7 +198,7 @@ export default function ResultScreen({ result, onPlayAgain, solo }: Props) {
           )}
 
           <div style={{ fontSize: '0.62rem', color: 'rgba(255,255,255,.15)', letterSpacing: '0.06em', marginTop: -4, animation: 'dash-stat .35s .7s both' }}>
-            Ranked by finish time · faster = better
+            Ranked by tokens collected · more = better
           </div>
 
           <button onClick={onPlayAgain} className="result-play-btn" style={{ width: '100%', padding: '15px', color: '#03030a', borderRadius: 12, fontSize: '0.95rem', fontWeight: 800, letterSpacing: '0.04em', cursor: 'pointer', fontFamily: 'inherit', transition: 'transform .12s', animation: 'dash-stat .35s .75s both' }}
