@@ -8,6 +8,7 @@
 import { useRef, useState, useEffect, useMemo } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Vector3, Color } from 'three';
+import type { Socket } from 'socket.io-client';
 
 import {
   generateRun, laneX, trackCenter, RunCourse,
@@ -110,15 +111,33 @@ interface LoopProps {
   zRef: React.MutableRefObject<number>;
   onEnd: (s: RunnerState) => void;
   onHud: (s: RunnerState) => void;
+  socket: Socket | null;
 }
 
-function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud }: LoopProps) {
+/**
+ * How often a position report goes to the server, in fixed steps. 60 steps is
+ * half a second, giving ~180 reports over a race against the 24 the server
+ * requires — enough headroom that a few dropped packets cannot fail an honest
+ * run, while still leaving the whole race visible in the stream.
+ */
+const REPORT_EVERY_STEPS = 60;
+
+function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud, socket }: LoopProps) {
   const { camera } = useThree();
   const acc = useRef(0);
   const prevLeft = useRef(false);
   const prevRight = useRef(false);
   const done = useRef(false);
   const hudAcc = useRef(0);
+  /**
+   * Absolute fixed-step index, and the sparse record of every step a lane
+   * change was asked on. This IS the run as far as the server is concerned:
+   * it replays these inputs to derive the score rather than believing the
+   * number we report.
+   */
+  const stepNo = useRef(0);
+  const trace = useRef<[number, number][]>([]);
+  const started = useRef(false);
 
   useFrame((_, delta) => {
     const s = stateRef.current;
@@ -137,8 +156,17 @@ function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud }: LoopProps) {
       prevLeft.current = i.left;
       prevRight.current = i.right;
 
+      if (!started.current) { started.current = true; socket?.emit('parity:start'); }
+      if (steer !== 0) trace.current.push([stepNo.current, steer]);
+
       const input: RunnerInput = { steer };
       step(course, s, input);
+
+      if (socket && stepNo.current % REPORT_EVERY_STEPS === 0) {
+        socket.emit('parity:progress', { step: stepNo.current, z: s.z, tokens: s.tokens });
+      }
+
+      stepNo.current++;
       acc.current -= FIXED_DT;
     }
 
@@ -151,7 +179,11 @@ function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud }: LoopProps) {
     hudAcc.current += delta;
     if (hudAcc.current > 0.08) { hudAcc.current = 0; onHud(s); }
 
-    if (s.finished && !done.current) { done.current = true; onEnd(s); }
+    if (s.finished && !done.current) {
+      done.current = true;
+      socket?.emit('parity:finish', { tokens: s.tokens, trace: trace.current });
+      onEnd(s);
+    }
   });
   return null;
 }
@@ -180,8 +212,11 @@ function Player({ course, stateRef }: { course: RunCourse; stateRef: React.Mutab
 
 // ── Screen ────────────────────────────────────────────────────────────────────
 
-export default function RunnerScreen({ roomCode = 'GREYBOX', onExit }: {
-  roomCode?: string; onExit?: () => void;
+export default function RunnerScreen({ roomCode = 'GREYBOX', onExit, socket = null }: {
+  roomCode?: string;
+  onExit?: () => void;
+  /** Null for solo practice — the run is then never submitted anywhere. */
+  socket?: Socket | null;
 }) {
   const course = useMemo(() => generateRun(roomCode), [roomCode]);
   const stateRef = useRef<RunnerState>(initialState());
@@ -230,6 +265,7 @@ export default function RunnerScreen({ roomCode = 'GREYBOX', onExit }: {
         <Loop
           key={runId}
           course={course} stateRef={stateRef} inputRef={inputRef} zRef={zRef}
+          socket={socket}
           onEnd={setFinal}
           onHud={s => setHud({
             z: s.z, t: s.elapsedS, clean: s.cleanS,
