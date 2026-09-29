@@ -2,19 +2,11 @@ import './src/index.css';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
-import RunnerScreen from './components/RunnerScreen';
 
 /**
- * Grey-box runner, reachable only at ?runner=1 (optionally &seed=CODE). The
- * branch lives here rather than inside App so App's hooks stay unconditional,
- * and so the live game is genuinely untouched while this is being built.
+ * The runner used to mount here, ahead of App, behind ?runner=1 — which meant
+ * it bypassed auth, balance and matchmaking entirely. It is the game now, so
+ * it goes through the normal flow and that branch is gone.
  */
-const params = new URLSearchParams(window.location.search);
-const runner = params.get('runner') === '1';
-
 const root = ReactDOM.createRoot(document.getElementById('root')!);
-root.render(
-  <React.StrictMode>
-    {runner ? <RunnerScreen roomCode={params.get('seed') || 'GREYBOX'} /> : <App />}
-  </React.StrictMode>,
-);
+root.render(<React.StrictMode><App /></React.StrictMode>);

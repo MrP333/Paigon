@@ -9,7 +9,7 @@ import Notice, { NoticeData } from './components/Notice';
 import ConnectionBanner from './components/ConnectionBanner';
 import HomeScreen from './components/HomeScreen';
 import WaitingScreen from './components/WaitingScreen';
-import GameScreen from './components/GameScreen';
+import RunnerScreen from './components/RunnerScreen';
 import ResultScreen from './components/ResultScreen';
 import DepositModal from './components/DepositModal';
 import { GameConfig, ResultData } from './types';
@@ -251,7 +251,18 @@ export default function App() {
       )}
       {screen === 'waiting' && <WaitingScreen onLeave={handleLeave} queueCount={queueCount} />}
       {screen === 'game' && gameConfig && (
-        <GameScreen config={gameConfig} socket={getSocket()} onResult={handleResult} />
+        <RunnerScreen
+          roomCode={gameConfig.roomCode}
+          socket={gameConfig.solo ? null : getSocket()}
+          solo={gameConfig.solo}
+          onResult={r => handleResult({
+            won: r.won,
+            myFinishTimeMs: 0,
+            myTokens: r.myTokens,
+            winnerName: r.winnerName,
+            players: r.players,
+          })}
+        />
       )}
       {screen === 'result' && resultData && (
         <ResultScreen result={resultData} onPlayAgain={handlePlayAgain} solo={gameConfig?.solo} />

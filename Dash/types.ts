@@ -24,6 +24,8 @@ export interface GameConfig {
 export interface ResultData {
   won: boolean;
   myFinishTimeMs: number;
+  /** Parity scores on tokens. Null when the run failed server validation. */
+  myTokens?: number | null;
   winnerName: string;
   players?: PlayerResult[];
   payoutCents?: number;

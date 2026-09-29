@@ -212,11 +212,17 @@ function Player({ course, stateRef }: { course: RunCourse; stateRef: React.Mutab
 
 // ── Screen ────────────────────────────────────────────────────────────────────
 
-export default function RunnerScreen({ roomCode = 'GREYBOX', onExit, socket = null }: {
+export default function RunnerScreen({
+  roomCode = 'GREYBOX', onExit, socket = null, solo = false, onResult,
+}: {
   roomCode?: string;
   onExit?: () => void;
   /** Null for solo practice — the run is then never submitted anywhere. */
   socket?: Socket | null;
+  solo?: boolean;
+  onResult?: (r: {
+    won: boolean; myTokens: number | null; winnerName: string; players?: any[];
+  }) => void;
 }) {
   const course = useMemo(() => generateRun(roomCode), [roomCode]);
   const stateRef = useRef<RunnerState>(initialState());
@@ -228,6 +234,29 @@ export default function RunnerScreen({ roomCode = 'GREYBOX', onExit, socket = nu
   // Remounts the loop on restart; without it the loop's `done` latch stays set
   // and a second run never advances.
   const [runId, setRunId] = useState(0);
+  const [rejected, setRejected] = useState<string | null>(null);
+
+  /**
+   * The server ranks the room and sends the verdict. A rejected run comes back
+   * with myTokens null rather than a score, because a run that failed
+   * validation did not happen as far as the result is concerned.
+   */
+  useEffect(() => {
+    if (!socket || solo || !onResult) return;
+    const onDone = (d: any) => onResult({
+      won: d.winnerId === socket.id,
+      myTokens: d.myTokens ?? null,
+      winnerName: d.winnerName ?? '',
+      players: d.players,
+    });
+    const onRejected = ({ reason }: { reason: string }) => {
+      console.warn('[parity] run rejected:', reason);
+      setRejected(reason);
+    };
+    socket.on('dash:result', onDone);
+    socket.on('parity:rejected', onRejected);
+    return () => { socket.off('dash:result', onDone); socket.off('parity:rejected', onRejected); };
+  }, [socket, solo, onResult]);
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -299,6 +328,14 @@ export default function RunnerScreen({ roomCode = 'GREYBOX', onExit, socket = nu
           <div style={{ opacity: .75, marginTop: 8 }}>
             {final.z.toFixed(0)}u · {final.crashes} contacts · best clean {final.bestCleanS.toFixed(1)}s
           </div>
+          {rejected && (
+            <div style={{ marginTop: 10, maxWidth: 420, textAlign: 'center', color: '#ff8080', fontSize: 12 }}>
+              This run was not accepted: {rejected}
+            </div>
+          )}
+          {!solo && !rejected && (
+            <div style={{ marginTop: 8, opacity: .55, fontSize: 12 }}>Waiting for the other players…</div>
+          )}
           <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
             <button onClick={() => {
               stateRef.current = initialState(); zRef.current = 0;
