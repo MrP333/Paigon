@@ -102,6 +102,62 @@ function Hazards({ course, zRef }: { course: RunCourse; zRef: React.MutableRefOb
   );
 }
 
+// ── Opponents ─────────────────────────────────────────────────────────────────
+
+export interface Ghost { id: string; z: number; lane: number; name: string; color: string; }
+
+/**
+ * Other players, drawn from the relayed progress stream.
+ *
+ * Reports land every 60 steps — half a second, about 17 units at racing speed —
+ * so the raw positions jump. Each ghost lerps toward its latest report instead
+ * of snapping to it. They are deliberately translucent and unlit: they are
+ * information about the race, not obstacles, and nothing about them can touch
+ * the local simulation.
+ */
+function Ghosts({ course, ghostsRef }: {
+  course: RunCourse;
+  ghostsRef: React.MutableRefObject<Map<string, Ghost>>;
+}) {
+  const group = useRef<any>(null);
+  const shown = useRef<Map<string, any>>(new Map());
+  const [, force] = useState(0);
+  const ids = useRef<string[]>([]);
+
+  useFrame((_, dt) => {
+    const live = [...ghostsRef.current.keys()];
+    if (live.length !== ids.current.length) { ids.current = live; force(n => n + 1); }
+    if (!group.current) return;
+    group.current.children.forEach((m: any) => {
+      const g = ghostsRef.current.get(m.userData.id);
+      if (!g) return;
+      const targetX = laneX(course, 0, g.z) + g.lane * LANE_W;
+      const k = Math.min(1, dt * 6);
+      m.position.x += (targetX - m.position.x) * k;
+      m.position.z += (g.z - m.position.z) * k;
+      m.position.y = 0.5;
+    });
+  });
+
+  return (
+    <group ref={group}>
+      {ids.current.map(id => {
+        const g = ghostsRef.current.get(id);
+        if (!g) return null;
+        return (
+          <mesh key={id} userData={{ id }} position={[0, 0.5, 0]}>
+            <sphereGeometry args={[0.5, 14, 12]} />
+            <meshStandardMaterial
+              color={g.color} emissive={new Color(g.color)} emissiveIntensity={0.7}
+              transparent opacity={0.45} depthWrite={false}
+            />
+          </mesh>
+        );
+      })}
+    </group>
+  );
+}
+
 // ── Simulation loop ───────────────────────────────────────────────────────────
 
 interface LoopProps {
@@ -163,7 +219,9 @@ function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud, socket }: LoopPr
       step(course, s, input);
 
       if (socket && stepNo.current % REPORT_EVERY_STEPS === 0) {
-        socket.emit('parity:progress', { step: stepNo.current, z: s.z, tokens: s.tokens });
+        socket.emit('parity:progress', {
+          step: stepNo.current, z: s.z, tokens: s.tokens, lane: s.lanePos,
+        });
       }
 
       stepNo.current++;
@@ -235,6 +293,7 @@ export default function RunnerScreen({
   // and a second run never advances.
   const [runId, setRunId] = useState(0);
   const [rejected, setRejected] = useState<string | null>(null);
+  const ghostsRef = useRef<Map<string, Ghost>>(new Map());
 
   /**
    * The server ranks the room and sends the verdict. A rejected run comes back
@@ -253,9 +312,18 @@ export default function RunnerScreen({
       console.warn('[parity] run rejected:', reason);
       setRejected(reason);
     };
+    const onPos = (g: Ghost) => {
+      const prev = ghostsRef.current.get(g.id);
+      ghostsRef.current.set(g.id, { ...g, name: g.name || prev?.name || '' });
+    };
     socket.on('dash:result', onDone);
     socket.on('parity:rejected', onRejected);
-    return () => { socket.off('dash:result', onDone); socket.off('parity:rejected', onRejected); };
+    socket.on('parity:position', onPos);
+    return () => {
+      socket.off('dash:result', onDone);
+      socket.off('parity:rejected', onRejected);
+      socket.off('parity:position', onPos);
+    };
   }, [socket, solo, onResult]);
 
   useEffect(() => {
@@ -291,6 +359,7 @@ export default function RunnerScreen({
         <Track course={course} zRef={zRef} />
         <Hazards course={course} zRef={zRef} />
         <Player course={course} stateRef={stateRef} />
+        <Ghosts course={course} ghostsRef={ghostsRef} />
         <Loop
           key={runId}
           course={course} stateRef={stateRef} inputRef={inputRef} zRef={zRef}
