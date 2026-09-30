@@ -57,12 +57,16 @@ export const LANE_CHANGE_S = 0.18;
 export const REACT_MARGIN_S = 0.25;
 
 /**
- * How far ahead a hazard is legible. Fixed in units, so reaction time is
- * LEAD / speed and shrinks as you charge: 1.4s at reset speed, 0.86s at the
- * clearable ceiling. Going faster is always the player buying distance with
- * thinking time.
+ * How far ahead hazards are drawn. This is the real visibility horizon and the
+ * client renders to it — an earlier value of 28 was never wired to anything,
+ * so both the code comments and the design reasoning built on it described a
+ * telegraph that did not exist. Reaction budget is LEAD / speed: 6.5s at reset
+ * speed, 2.8s at the clearable ceiling.
+ *
+ * Changing this changes how much planning is possible, so it is a gameplay
+ * number, not a draw-distance number.
  */
-export const TELEGRAPH_LEAD = 28;
+export const TELEGRAPH_LEAD = 130;
 
 /** One lane change, decided and completed. The unit everything is sized against. */
 export const SAFE_WINDOW_S = LANE_CHANGE_S + REACT_MARGIN_S;

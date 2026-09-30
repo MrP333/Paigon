@@ -65,6 +65,18 @@ export interface RunnerState {
   elapsedS: number;
   shards: number;
   crashes: number;
+  /**
+   * Display-only run stats. Never scored, never sent for validation — the
+   * server derives the cash number (tokens) from the replay, and a stat it
+   * cannot reproduce must not decide money. If combo is ever promoted into
+   * the cash score, it has to move into server/runner.cjs first.
+   */
+  streak: number;
+  bestStreak: number;
+  /** Steps between a row becoming current and the first input after it. */
+  reactionSamples: number[];
+  pendingRowStep: number;
+  stepNo: number;
   /** Index of the next row that has not been tested yet. */
   rowCursor: number;
   shardCursor: number;
@@ -78,6 +90,7 @@ export function initialState(): RunnerState {
     lanePos: mid, laneTarget: mid,
     immuneS: 0, cleanS: 0, bestCleanS: 0,
     tokens: 0, tokensSeen: 0,
+    streak: 0, bestStreak: 0, reactionSamples: [], pendingRowStep: -1, stepNo: 0,
     elapsedS: 0, shards: 0, crashes: 0,
     rowCursor: 0, shardCursor: 0,
     finished: false,
@@ -99,6 +112,12 @@ export function step(
 
   const dt = FIXED_DT;
   s.elapsedS += dt;
+  s.stepNo++;
+  // First input after a new row became current is that row's reaction sample.
+  if (input.steer !== 0 && s.pendingRowStep >= 0) {
+    s.reactionSamples.push((s.stepNo - s.pendingRowStep) * FIXED_DT);
+    s.pendingRowStep = -1;
+  }
 
   // ── Steering ──
   if (input.steer !== 0) {
@@ -126,7 +145,15 @@ export function step(
       s.tokensSeen++;
       // Collected on lane overlap, same band as a hazard — so threading a gap
       // and taking the token are the same act of precision.
-      if (Math.abs(s.lanePos - tk.lane) * LANE_W < HIT_DIST) { s.tokens++; ev.picked++; }
+      if (Math.abs(s.lanePos - tk.lane) * LANE_W < HIT_DIST) {
+        s.tokens++; ev.picked++;
+        s.streak++;
+        if (s.streak > s.bestStreak) s.bestStreak = s.streak;
+      }
+      // Missing a token does NOT break the streak. A third of trails dead-end
+      // into a blocked lane, so leaving the line is often the only correct
+      // play — breaking combo for it would punish reading the course right.
+      // Only contact breaks it.
     }
     s.shardCursor++;
   }
@@ -136,11 +163,13 @@ export function step(
     const row = course.rows[s.rowCursor];
     if (row.z >= z0 && s.immuneS <= 0 && hits(row, s.lanePos)) {
       s.crashes++; ev.crashed = true;
+      s.streak = 0;
       s.immuneS = CONTACT_IMMUNE_S;
       s.cleanS = 0;
       s.speed = Math.max(RESET_SPEED, s.speed * CONTACT_RETAIN);
     }
     s.rowCursor++;
+    s.pendingRowStep = s.stepNo;
   }
 
   if (s.elapsedS * 1000 >= RACE_MS) s.finished = true;
@@ -156,4 +185,19 @@ export function safeLanes(row: HazardRow): number[] {
   const out: number[] = [];
   for (let l = 0; l < LANES; l++) if (!hits(row, l)) out.push(l);
   return out;
+}
+
+/**
+ * The player's effective reaction, as the median delay between a row becoming
+ * the current target and their first input after it. Median rather than mean
+ * because the distribution has a long tail — a single hesitation should not
+ * move the number.
+ *
+ * Display only. Derived from the trace, so the server could reproduce it, but
+ * nothing depends on it and it is not part of the result.
+ */
+export function estimateReaction(s: RunnerState): number | null {
+  const xs = s.reactionSamples.filter(v => v > 0 && v < 2).sort((a, b) => a - b);
+  if (xs.length < 8) return null;
+  return xs[xs.length >> 1];
 }

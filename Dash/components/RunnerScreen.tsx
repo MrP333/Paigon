@@ -15,7 +15,7 @@ import {
   LANES, LANE_W, RESET_SPEED, RACE_MS,
 } from '../engine/RunnerCourse';
 import {
-  initialState, step, playerX, RunnerState, RunnerInput, FIXED_DT,
+  initialState, step, playerX, RunnerState, RunnerInput, FIXED_DT, estimateReaction,
 } from '../engine/RunnerPhysics';
 
 const VIEW_AHEAD  = 130;
@@ -394,9 +394,34 @@ export default function RunnerScreen({
             {final.tokens}<span style={{ fontSize: 20, opacity: .55, color: '#dfe6ee' }}> / {final.tokensSeen}</span>
           </div>
           <div style={{ opacity: .55, marginTop: -6, letterSpacing: '.2em', fontSize: 12 }}>TOKENS</div>
-          <div style={{ opacity: .75, marginTop: 8 }}>
-            {final.z.toFixed(0)}u · {final.crashes} contacts · best clean {final.bestCleanS.toFixed(1)}s
+          {/* The thermostat made visible. Speed is deliberately not a number
+              during the run, but afterwards the whole point is seeing where
+              your own limit actually sat. */}
+          <div style={{
+            display: 'flex', gap: 26, marginTop: 14, justifyContent: 'center',
+            fontFamily: 'ui-monospace, monospace',
+          }}>
+            {[
+              ['best streak', String(final.bestStreak)],
+              ['contacts', String(final.crashes)],
+              ['clean run', `${final.bestCleanS.toFixed(1)}s`],
+            ].map(([label, value]) => (
+              <div key={label} style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 22, fontWeight: 700 }}>{value}</div>
+                <div style={{ fontSize: 10, opacity: .45, letterSpacing: '.12em', textTransform: 'uppercase' }}>{label}</div>
+              </div>
+            ))}
           </div>
+          {estimateReaction(final) !== null && (
+            <div style={{ marginTop: 12, fontSize: 13, opacity: .8 }}>
+              you played at a{' '}
+              <span style={{ color: '#41d6ff', fontWeight: 700 }}>
+                {(estimateReaction(final)! * 1000).toFixed(0)}ms
+              </span>{' '}
+              reaction
+            </div>
+          )}
+          <div style={{ marginTop: 6, fontSize: 11, opacity: .35 }}>{final.z.toFixed(0)}u covered</div>
           {rejected && (
             <div style={{ marginTop: 10, maxWidth: 420, textAlign: 'center', color: '#ff8080', fontSize: 12 }}>
               This run was not accepted: {rejected}
