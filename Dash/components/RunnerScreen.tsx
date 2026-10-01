@@ -9,6 +9,7 @@ import { useRef, useState, useEffect, useMemo } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Vector3, Color } from 'three';
 import type { Socket } from 'socket.io-client';
+import { loadPB, savePB, PersonalBest } from '../engine/RunnerPB';
 
 import {
   generateRun, laneX, trackCenter, RunCourse,
@@ -158,6 +159,42 @@ function Ghosts({ course, ghostsRef }: {
   );
 }
 
+/**
+ * Your previous best run on this course, stepped alongside the live one.
+ *
+ * The simulation is deterministic, so replaying the stored trace reproduces
+ * that run exactly — this is not an approximation or a recorded path, it is
+ * the same code running the same inputs. Stepped inside the live loop so the
+ * two stay on the same clock.
+ */
+function usePBGhost(course: RunCourse, pb: PersonalBest | null, runId: number) {
+  return useMemo(() => {
+    if (!pb || !pb.trace.length) return null;
+    return { state: initialState(), trace: pb.trace, cursor: 0 };
+  }, [pb, course, runId]);
+}
+
+function GhostRider({ course, ghost }: {
+  course: RunCourse;
+  ghost: { state: RunnerState } | null;
+}) {
+  const ref = useRef<any>(null);
+  useFrame(() => {
+    if (!ref.current || !ghost) return;
+    ref.current.position.set(playerX(course, ghost.state), 0.5, ghost.state.z);
+  });
+  if (!ghost) return null;
+  return (
+    <mesh ref={ref}>
+      <sphereGeometry args={[0.5, 14, 12]} />
+      <meshStandardMaterial
+        color="#9aa4b2" emissive={new Color('#9aa4b2')} emissiveIntensity={0.4}
+        transparent opacity={0.3} depthWrite={false}
+      />
+    </mesh>
+  );
+}
+
 // ── Simulation loop ───────────────────────────────────────────────────────────
 
 interface LoopProps {
@@ -168,6 +205,8 @@ interface LoopProps {
   onEnd: (s: RunnerState) => void;
   onHud: (s: RunnerState) => void;
   socket: Socket | null;
+  ghost: { state: RunnerState; trace: [number, number][]; cursor: number } | null;
+  onTrace?: (t: [number, number][]) => void;
 }
 
 /**
@@ -178,7 +217,7 @@ interface LoopProps {
  */
 const REPORT_EVERY_STEPS = 60;
 
-function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud, socket }: LoopProps) {
+function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud, socket, ghost, onTrace }: LoopProps) {
   const { camera } = useThree();
   const acc = useRef(0);
   const prevLeft = useRef(false);
@@ -224,6 +263,16 @@ function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud, socket }: LoopPr
         });
       }
 
+      // The ghost advances on the same fixed step as the live run, so the two
+      // are always comparing the same moment rather than drifting on frames.
+      if (ghost && !ghost.state.finished) {
+        let g: -1 | 0 | 1 = 0;
+        while (ghost.cursor < ghost.trace.length && ghost.trace[ghost.cursor][0] === stepNo.current) {
+          g = ghost.trace[ghost.cursor][1] as -1 | 1; ghost.cursor++;
+        }
+        step(course, ghost.state, { steer: g });
+      }
+
       stepNo.current++;
       acc.current -= FIXED_DT;
     }
@@ -240,6 +289,7 @@ function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud, socket }: LoopPr
     if (s.finished && !done.current) {
       done.current = true;
       socket?.emit('parity:finish', { tokens: s.tokens, trace: trace.current });
+      onTrace?.(trace.current);
       onEnd(s);
     }
   });
@@ -293,6 +343,10 @@ export default function RunnerScreen({
   // and a second run never advances.
   const [runId, setRunId] = useState(0);
   const [rejected, setRejected] = useState<string | null>(null);
+  const [pb, setPb] = useState<PersonalBest | null>(() => loadPB(roomCode));
+  const [beatPB, setBeatPB] = useState(false);
+  const traceRef = useRef<[number, number][]>([]);
+  const ghostRun = usePBGhost(course, pb, runId);
   const ghostsRef = useRef<Map<string, Ghost>>(new Map());
 
   /**
@@ -359,12 +413,26 @@ export default function RunnerScreen({
         <Track course={course} zRef={zRef} />
         <Hazards course={course} zRef={zRef} />
         <Player course={course} stateRef={stateRef} />
+        <GhostRider course={course} ghost={ghostRun} />
         <Ghosts course={course} ghostsRef={ghostsRef} />
         <Loop
           key={runId}
           course={course} stateRef={stateRef} inputRef={inputRef} zRef={zRef}
           socket={socket}
-          onEnd={setFinal}
+          ghost={ghostRun}
+          onTrace={t => { traceRef.current = t; }}
+          onEnd={s => {
+            setFinal(s);
+            // PBs are per-course: the seed is the level, so a best is only
+            // meaningful against the course it was set on.
+            const beat = savePB(roomCode, {
+              tokens: s.tokens, streak: s.bestStreak, contacts: s.crashes,
+              reactionMs: estimateReaction(s) === null ? null : Math.round(estimateReaction(s)! * 1000),
+              trace: traceRef.current, at: Date.now(),
+            });
+            setBeatPB(beat);
+            if (beat) setPb(loadPB(roomCode));
+          }}
           onHud={s => setHud({
             z: s.z, t: s.elapsedS, clean: s.cleanS,
             tokens: s.tokens, seen: s.tokensSeen, crashes: s.crashes, speed: s.speed,
@@ -422,6 +490,22 @@ export default function RunnerScreen({
             </div>
           )}
           <div style={{ marginTop: 6, fontSize: 11, opacity: .35 }}>{final.z.toFixed(0)}u covered</div>
+
+          {/* The seed is the level, so the only comparison that means anything
+              is against your own runs on THIS course. */}
+          {beatPB && pb && (
+            <div style={{ marginTop: 10, color: '#ffd76a', fontWeight: 700, fontSize: 13 }}>
+              NEW BEST ON THIS COURSE
+            </div>
+          )}
+          {!beatPB && pb && (
+            <div style={{ marginTop: 10, fontSize: 12, opacity: .6 }}>
+              best on this course: {pb.tokens}
+              <span style={{ color: final.tokens >= pb.tokens ? '#41d6ff' : '#ff8080', marginLeft: 8 }}>
+                {final.tokens - pb.tokens >= 0 ? '+' : ''}{final.tokens - pb.tokens}
+              </span>
+            </div>
+          )}
           {rejected && (
             <div style={{ marginTop: 10, maxWidth: 420, textAlign: 'center', color: '#ff8080', fontSize: 12 }}>
               This run was not accepted: {rejected}
@@ -433,10 +517,11 @@ export default function RunnerScreen({
           <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
             <button onClick={() => {
               stateRef.current = initialState(); zRef.current = 0;
-              setFinal(null); setRunId(n => n + 1);
+              traceRef.current = [];
+              setFinal(null); setBeatPB(false); setRunId(n => n + 1);
             }}
               style={{ ...mono, padding: '10px 22px', background: '#41d6ff', color: '#08080c', border: 0, borderRadius: 8, cursor: 'pointer', fontWeight: 700 }}>
-              Again
+              {pb ? 'Same course — beat ' + pb.tokens : 'Same course'}
             </button>
             {onExit && (
               <button onClick={onExit}
