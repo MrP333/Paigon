@@ -64,4 +64,35 @@ for (const [name, tr, want] of checks) {
   if (got !== want) { bad++; console.log(`FAIL gate "${name}" expected ${want} got ${got}`); }
 }
 console.log(`plausibility gate: ${checks.length} cases ${bad===0?'all correct':'FAILURES'}`);
+
+// ── Constant drift ───────────────────────────────────────────────────────────
+// The two implementations diverged once on a single literal — a betrayal
+// probability of 0.22 against 0.34 — and every other check still passed until
+// the course comparison caught it three steps later. Compare the numbers
+// directly so a drift names itself.
+{
+  const fs = await import('fs');
+  const KEYS = ['TOKEN_SPACING','MIN_GAP','EASY_GAP','RESET_SPEED','SPEED_CAP',
+    'CEILING_WINDOW_S','CEILING_LOOKAHEAD','RAMP_FULL_Z','CHARGE_RATE',
+    'CONTACT_RETAIN','START_CLEAR','LANE_W','LANE_CHANGE_S','REACT_MARGIN_S',
+    'PLAYER_HALF','CONTACT_IMMUNE_S','RACE_MS','LANES'];
+  const tsSrc = fs.readFileSync(new URL('./RunnerCourse.ts', import.meta.url), 'utf8')
+              + fs.readFileSync(new URL('./RunnerPhysics.ts', import.meta.url), 'utf8');
+  const cjSrc = fs.readFileSync(new URL('../../MazerGame/server/runner.cjs', import.meta.url), 'utf8');
+  const val = (src: string, k: string) => {
+    const m = new RegExp(`\\b${k}\\s*=\\s*([0-9_.]+)`).exec(src);
+    return m ? m[1].replace(/_/g, '') : null;
+  };
+  let drift = 0;
+  for (const k of KEYS) {
+    const a = val(tsSrc, k), b = val(cjSrc, k);
+    if (a !== b) { drift++; console.log(`FAIL constant ${k}: TS ${a} vs CJS ${b}`); }
+  }
+  const pa = (tsSrc.match(/rng\(\) [<>] [0-9.]+/g) ?? []).join(',');
+  const pb = (cjSrc.match(/rng\(\) [<>] [0-9.]+/g) ?? []).join(',');
+  if (pa !== pb) { drift++; console.log(`FAIL rng thresholds: TS [${pa}] vs CJS [${pb}]`); }
+  console.log(`shared constants   : ${KEYS.length} checked, ${drift === 0 ? 'all aligned' : drift + ' DRIFTED'}`);
+  if (drift) bad++;
+}
+
 console.log(bad===0 ? '\nSERVER CAN REPRODUCE A RUN EXACTLY' : `\n${bad} FAILURES`);
