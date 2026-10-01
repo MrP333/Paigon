@@ -12,10 +12,12 @@
  *   ahead of the player inside the three lanes.
  *
  * Frame cost, high / low (draw calls, not the caller's hazards and tokens):
- *   Sky 1/1, walls 2/2, deck 1/1, shoulder pylons 2/2,
- *   speed streaks 1 (36 / 12 instances), motes 1 (24 / 0),
- *   player orb 1, trail 1 (12 / 4), reward billboards 1 (40 / 12),
- *   milestone ring 1/1.
+ *   Sky 1/1. Walls 2/2 instanced segments (20 / 10 each). Deck 1/1 instanced slabs (20 / 10).
+ *   Shoulder pylons 2/2. Speed streaks 1 (36 / 12). Motes 1 (24 / 0).
+ *   Gate 1 draw, 3 instances (pillar, pillar, lintel) — same on low. Opening stays wider than the lanes.
+ *   Player orb 1, trail 1 (12 / 4), reward billboards 1 (40 / 12), milestone ring 1/1.
+ *   Act change is a uniform lerp, 0 extra draws. Crossing flash is a DOM opacity
+ *   for about four frames at 60Hz, never a fullscreen pass.
  *   Hazards: one shared MeshStandardMaterial. Tokens: two shared materials
  *   (gold, amber). Do not clone them per box.
  *
@@ -44,41 +46,77 @@ export const DASH_COLORS = {
 
 export const STREAK_MARKS = [5, 10, 15, 20, 30, 40];
 
+/** Fixed course points. Replace with the real gate z list. Two gates, three acts. */
+export const GATE_Z = [620, 1280];
+
+/**
+ * Centreline sway. Sample at the object's own z.
+ *
+ * The pack ships a stand-in formula so its own preview has a curve to follow.
+ * The real course generates a DIFFERENT one, with seed-dependent phases — it
+ * changes per room code — so the host must install the live course's function
+ * or the scenery sways on a path the lanes never take, and the player drives
+ * through the canyon wall on every bend.
+ */
+let centerImpl = (z: number) => Math.sin(z * 0.021) * 10 + Math.sin(z * 0.008 + 1.7) * 8;
+
+/**
+ * Install the real course's centreline. Call once per run.
+ *
+ * `phases` are the three seeded offsets the deck shader needs. The JS side and
+ * the GLSL side compute the same curve independently — if only one is updated
+ * the painted lane markings drift away from where the lanes actually are.
+ */
+export function setCenterAt(fn: (z: number) => number, phases?: [number, number, number]) {
+  centerImpl = fn;
+  if (phases) pendingSway = phases;
+}
+
+let pendingSway: [number, number, number] | null = null;
+
+/** Applied once the theme exists; called from the frame loop. */
+function applySway(t: Theme) {
+  if (!pendingSway) return;
+  (t.deckMat.uniforms.uSway.value as THREE.Vector3).set(...pendingSway);
+  pendingSway = null;
+}
+
+export function centerAt(z: number) {
+  return centerImpl(z);
+}
+
 export const dashVis = {
   speed: 20,
   z: 0,
   distance: 0,
   laneX: 0,
-  /**
-   * Lateral offset of the course at a given depth.
-   *
-   * The pack was authored against a straight preview course, so every piece of
-   * scenery was pinned to absolute x — walls at +/-7.15, shoulders, streaks,
-   * motes. The real course sways: its centreline swings roughly -18 to +18.5
-   * units, while the lanes only span centre +/-4.8. The player therefore drove
-   * straight through the canyon walls on every bend.
-   *
-   * Each element samples this at ITS OWN z rather than the player's. Offsetting
-   * the whole scenery by one value would be wrong by up to ~4.7 units for the
-   * walls, which sit 24 units ahead — more than the 2.35 units of clearance
-   * they have.
-   */
-  centerAt: ((z: number) => 0) as (z: number) => number,
   streak: 0,
   /** 0..1 peripheral heat. Theme owns the decay. */
   heat: 0,
   reward: 0,
   contact: 0,
   finish: 0,
+  /** 1 for a few frames when a gate is crossed. Theme decays it. */
+  flash: 0,
+  /** 0 act one, 1 act two, 2 act three. Derived from z and gates. */
+  act: 0,
   /** 1 when the player's lane closes inside the read window. */
   threat: 0,
   burstSeq: 0,
   contactSeq: 0,
   finishSeq: 0,
   milestoneSeq: 0,
+  gateSeq: 0,
   /** 1 = high, 0 = cheap fallback. */
   quality: 1,
+  gates: GATE_Z,
+  centerAt,
+  _prevZ: 0,
 };
+
+export function worldX(z = dashVis.z, laneOffset = dashVis.laneX) {
+  return centerAt(z) + laneOffset;
+}
 
 export function setDashQuality(high: boolean) {
   dashVis.quality = high ? 1 : 0;
@@ -88,7 +126,6 @@ export function pushRunState(s: {
   speed: number;
   z: number;
   laneX: number;
-  centerAt?: (z: number) => number;
   streak: number;
   threat?: number;
 }) {
@@ -96,7 +133,6 @@ export function pushRunState(s: {
   dashVis.z = s.z;
   dashVis.distance = s.z;
   dashVis.laneX = s.laneX;
-  if (s.centerAt) dashVis.centerAt = s.centerAt;
   dashVis.streak = s.streak;
   dashVis.threat = s.threat ?? 0;
 }
@@ -222,7 +258,7 @@ varying vec2 vUv;
 varying vec3 vWorld;
 void main() {
   vUv = uv;
-  vec4 world = modelMatrix * vec4(position, 1.0);
+  vec4 world = modelMatrix * instanceMatrix * vec4(position, 1.0);
   vWorld = world.xyz;
   gl_Position = projectionMatrix * viewMatrix * world;
 }
@@ -235,19 +271,24 @@ uniform sampler2D uDetail;
 uniform float uDist;
 uniform float uSpeed;
 uniform float uHeat;
+uniform float uAct;
 uniform vec3 uCyan;
 uniform vec3 uViolet;
 uniform vec3 uFog;
 void main() {
-  float rib = smoothstep(0.82, 1.0, fract(vWorld.y * 0.55 - uDist * 0.012));
-  float panel = smoothstep(0.97, 1.0, fract(vWorld.z * 0.08 - uDist * 0.004));
-  float top = smoothstep(4.6, 5.2, vWorld.y);
+  float freq = mix(0.42, 1.25, clamp(uAct / 2.0, 0.0, 1.0));
+  float rib = smoothstep(0.78, 1.0, fract(vWorld.y * freq - uDist * 0.012));
+  float slash = smoothstep(0.94, 1.0, fract(vWorld.y * 0.35 + vWorld.z * 0.12));
+  float pattern = mix(rib, max(rib, slash), smoothstep(1.15, 1.85, uAct));
+  float panel = smoothstep(0.97, 1.0, fract(vWorld.z * mix(0.08, 0.2, clamp(uAct / 2.0, 0.0, 1.0))));
+  float top = smoothstep(0.82, 1.0, vUv.y);
   vec2 uv = vec2(vWorld.y * 0.2, vWorld.z * 0.08 - uDist * 0.02);
   float grain = texture2D(uDetail, uv).r;
-  vec3 neon = mix(uCyan, uViolet, clamp(uHeat, 0.0, 1.0));
+  vec3 neon = mix(uCyan, uViolet, clamp(uHeat * 0.65 + uAct * 0.28, 0.0, 1.0));
+  float boost = 1.0 + uAct * 0.62;
   vec3 col = vec3(0.012, 0.010, 0.028);
-  col += neon * rib * (0.85 + uSpeed * 2.1);
-  col += neon * top * (1.1 + uSpeed * 1.4);
+  col += neon * pattern * (0.85 + uSpeed * 2.1) * boost;
+  col += neon * top * (1.1 + uSpeed * 1.4) * boost;
   col += vec3(0.25, 0.35, 0.55) * panel * 0.35;
   col += grain * 0.05;
   float dist = distance(cameraPosition, vWorld);
@@ -259,7 +300,7 @@ void main() {
 const deckVert = /* glsl */ `
 varying vec3 vWorld;
 void main() {
-  vec4 world = modelMatrix * vec4(position, 1.0);
+  vec4 world = modelMatrix * instanceMatrix * vec4(position, 1.0);
   vWorld = world.xyz;
   gl_Position = projectionMatrix * viewMatrix * world;
 }
@@ -273,23 +314,33 @@ uniform float uSpeed;
 uniform float uHeat;
 uniform float uLaneX;
 uniform float uZ;
+uniform float uAct;
 uniform vec3 uCyan;
 uniform vec3 uViolet;
 uniform vec3 uFog;
+// Must match the host's course exactly. uSway carries the seeded phases, so
+// the deck's lane markings land on the same curve the lanes actually take.
+// A hardcoded formula here puts the painted lanes somewhere the player is not.
+uniform vec3 uSway;
+float centerLine(float z) {
+  return sin(z * 0.01150 + uSway.x) * 7.50000
+       + sin(z * 0.00440 + uSway.y) * 11.00000
+       + sin(z * 0.02810 + uSway.z) * 2.20000;
+}
 void main() {
-  float x = vWorld.x;
-  float lane = min(abs(x), min(abs(x - 3.2), abs(x + 3.2)));
+  float rel = vWorld.x - centerLine(vWorld.z);
+  float lane = min(abs(rel), min(abs(rel - 3.2), abs(rel + 3.2)));
   float inLane = 1.0 - smoothstep(0.9, 1.45, lane);
-  float rail = 1.0 - smoothstep(0.0, 0.22, abs(abs(x) - 5.55));
-  float seam = smoothstep(0.965, 1.0, fract((vWorld.z) * 0.1));
-  vec2 uv = vec2(x * 0.22, vWorld.z * 0.22 - uDist * 0.03);
+  float rail = 1.0 - smoothstep(0.0, 0.22, abs(abs(rel) - 5.55));
+  float seam = smoothstep(0.965, 1.0, fract(vWorld.z * mix(0.10, 0.22, clamp(uAct / 2.0, 0.0, 1.0))));
+  vec2 uv = vec2(rel * 0.22, vWorld.z * 0.22 - uDist * 0.03);
   float grain = texture2D(uDetail, uv).r;
-  vec3 neon = mix(uCyan, uViolet, clamp(uHeat, 0.0, 1.0));
+  vec3 neon = mix(uCyan, uViolet, clamp(uHeat * 0.65 + uAct * 0.28, 0.0, 1.0));
   vec3 col = vec3(0.010, 0.009, 0.020) + grain * 0.045;
   col += vec3(0.18, 0.22, 0.32) * seam * 0.22;
-  col += neon * rail * (0.65 + uSpeed * 1.35);
+  col += neon * rail * (0.65 + uSpeed * 1.35) * (1.0 + uAct * 0.45);
   col *= mix(1.0, 0.42, inLane);
-  float mine = abs(x - uLaneX);
+  float mine = abs(rel - uLaneX);
   float myLane = 1.0 - smoothstep(0.15, 1.2, mine);
   float along = vWorld.z - uZ;
   float near = (1.0 - smoothstep(0.5, 11.0, along)) * step(-1.5, along);
@@ -313,18 +364,20 @@ const skyFrag = /* glsl */ `
 varying vec3 vDir;
 uniform float uSpeed;
 uniform float uHeat;
+uniform float uAct;
 uniform vec3 uCyan;
 uniform vec3 uViolet;
 void main() {
   vec3 dir = normalize(vDir);
   float h = dir.y;
   vec3 top = vec3(0.012, 0.006, 0.035);
-  vec3 mid = vec3(0.045, 0.012, 0.110);
-  vec3 hor = mix(uCyan, uViolet, 0.35 + 0.65 * clamp(uHeat, 0.0, 1.0));
+  vec3 mid = mix(vec3(0.045, 0.012, 0.110), vec3(0.09, 0.02, 0.16), clamp(uAct / 2.0, 0.0, 1.0));
+  vec3 hor = mix(uCyan, uViolet, 0.35 + 0.45 * clamp(uHeat, 0.0, 1.0) + 0.2 * clamp(uAct / 2.0, 0.0, 1.0));
   vec3 col = mix(top, mid, smoothstep(0.55, 0.05, h));
-  float band = smoothstep(0.22, -0.02, h);
-  col = mix(col, hor, band * (0.28 + uSpeed * 0.72));
-  float stars = step(0.984, fract(sin(dot(floor(dir.xy * 90.0), vec2(12.9898, 78.233))) * 43758.5453));
+  float band = smoothstep(mix(0.22, 0.08, clamp(uAct / 2.0, 0.0, 1.0)), -0.02, h);
+  col = mix(col, hor, band * (0.28 + uSpeed * 0.72 + uAct * 0.18));
+  float starCut = mix(0.986, 0.972, clamp(uAct / 2.0, 0.0, 1.0));
+  float stars = step(starCut, fract(sin(dot(floor(dir.xy * 90.0), vec2(12.9898, 78.233))) * 43758.5453));
   col += stars * (0.35 + uSpeed * 0.9) * smoothstep(0.05, 0.4, h);
   gl_FragColor = vec4(col, 1.0);
 }
@@ -391,7 +444,7 @@ function buildTheme(): Theme {
   };
 
   const wallMat = new THREE.ShaderMaterial({
-    uniforms: { ...shared, uDetail: { value: detail }, uCyan: { value: cyan.clone() }, uViolet: { value: violet.clone() }, uFog: { value: fog.clone() } },
+    uniforms: { ...shared, uDetail: { value: detail }, uCyan: { value: cyan.clone() }, uViolet: { value: violet.clone() }, uFog: { value: fog.clone() }, uAct: { value: 0 } },
     vertexShader: wallVert,
     fragmentShader: wallFrag,
   });
@@ -408,6 +461,10 @@ function buildTheme(): Theme {
       uCyan: { value: cyan.clone() },
       uViolet: { value: violet.clone() },
       uFog: { value: fog.clone() },
+      uAct: { value: 0 },
+      // Seeded phases of the host's centreline. Defaults are the pack's own
+      // stand-in curve; setCenterAt's companion overwrites them per run.
+      uSway: { value: new THREE.Vector3(0, 1.7, 0) },
     },
     vertexShader: deckVert,
     fragmentShader: deckFrag,
@@ -420,6 +477,7 @@ function buildTheme(): Theme {
       uHeat: { value: 0 },
       uCyan: { value: cyan.clone() },
       uViolet: { value: violet.clone() },
+      uAct: { value: 0 },
     },
     vertexShader: skyVert,
     fragmentShader: skyFrag,
@@ -515,8 +573,8 @@ function buildTheme(): Theme {
     trailMat,
     orbMat,
     ringMat,
-    wallGeo: new THREE.PlaneGeometry(170, 5.6),
-    deckGeo: new THREE.PlaneGeometry(22, 180),
+    wallGeo: new THREE.PlaneGeometry(8, 1),
+    deckGeo: new THREE.PlaneGeometry(28, 8),
     skyGeo: new THREE.SphereGeometry(80, 28, 16),
     pylonGeo: new THREE.BoxGeometry(0.16, 1, 0.16),
     streakGeo: new THREE.PlaneGeometry(0.18, 7),
@@ -560,9 +618,43 @@ const _gold = new THREE.Color(DASH_COLORS.gold);
 const _cyan = new THREE.Color(DASH_COLORS.cyan);
 const _violet = new THREE.Color(DASH_COLORS.violet);
 const _white = new THREE.Color('#f4fbff');
+const _fog = new THREE.Color();
+const ACT_A = [new THREE.Color('#3ecfff'), new THREE.Color('#b388ff'), new THREE.Color('#d7fbff')];
+const ACT_B = [new THREE.Color('#1a8cff'), new THREE.Color('#6d4bff'), new THREE.Color('#7aa2ff')];
+const ACT_FOG = [new THREE.Color('#07141c'), new THREE.Color('#140a22'), new THREE.Color('#070814')];
 
 function speedNorm() {
   return THREE.MathUtils.clamp((dashVis.speed - 16) / 34, 0, 1);
+}
+
+function actSample(z: number) {
+  const list = dashVis.gates;
+  let act = 0;
+  let gate = -1e9;
+  for (let i = 0; i < list.length; i++) {
+    if (z >= list[i]) {
+      act = Math.min(2, i + 1);
+      gate = list[i];
+    }
+  }
+  if (act === 0) return { prev: 0, act: 0, t: 1, u: 0 };
+  const prev = act - 1;
+  const t = Math.min(1, (z - gate) / 14);
+  return { prev, act, t, u: prev + (act - prev) * t };
+}
+
+function watchGates() {
+  if (dashVis.z + 0.5 < dashVis._prevZ) dashVis._prevZ = dashVis.z;
+  const list = dashVis.gates;
+  for (let i = 0; i < list.length; i++) {
+    const g = list[i];
+    if (dashVis._prevZ < g && dashVis.z >= g) {
+      dashVis.flash = 1;
+      dashVis.gateSeq++;
+    }
+  }
+  dashVis._prevZ = dashVis.z;
+  dashVis.act = actSample(dashVis.z).act;
 }
 
 function decay(dt: number) {
@@ -570,27 +662,51 @@ function decay(dt: number) {
   dashVis.reward *= k(3.2);
   dashVis.contact *= k(4.5);
   dashVis.finish *= k(1.4);
+  dashVis.flash *= k(40);
   const target =
     Math.min(1, dashVis.streak / 24) * 0.62 + speedNorm() * 0.38 + dashVis.finish * 0.4;
   dashVis.heat += (target - dashVis.heat) * (1 - Math.exp(-2.4 * dt));
 }
 
+function paintAct(t: Theme, u: number, prev: number, act: number, blend: number) {
+  _cyan.copy(ACT_A[prev]).lerp(ACT_A[act], blend);
+  _violet.copy(ACT_B[prev]).lerp(ACT_B[act], blend);
+  const fog = _fog.copy(ACT_FOG[prev]).lerp(ACT_FOG[act], blend);
+  t.wallMat.uniforms.uCyan.value.copy(_cyan);
+  t.wallMat.uniforms.uViolet.value.copy(_violet);
+  t.wallMat.uniforms.uFog.value.copy(fog);
+  t.wallMat.uniforms.uAct.value = u;
+  t.deckMat.uniforms.uCyan.value.copy(_cyan);
+  t.deckMat.uniforms.uViolet.value.copy(_violet);
+  t.deckMat.uniforms.uFog.value.copy(fog);
+  t.deckMat.uniforms.uAct.value = u;
+  t.skyMat.uniforms.uCyan.value.copy(_cyan);
+  t.skyMat.uniforms.uViolet.value.copy(_violet);
+  t.skyMat.uniforms.uAct.value = u;
+  t.pylonCyan.emissive.copy(_cyan);
+  t.pylonViolet.emissive.copy(_violet);
+  t.streakMat.color.copy(_cyan);
+  t.moteMat.color.copy(_violet);
+}
+
 function paintScroll(t: Theme) {
   const sn = speedNorm();
+  const sample = actSample(dashVis.z);
+  paintAct(t, sample.u, sample.prev, sample.act, sample.t);
   t.wallMat.uniforms.uDist.value = dashVis.distance;
   t.wallMat.uniforms.uSpeed.value = sn;
   t.wallMat.uniforms.uHeat.value = dashVis.heat;
   t.deckMat.uniforms.uDist.value = dashVis.distance;
   t.deckMat.uniforms.uSpeed.value = sn;
   t.deckMat.uniforms.uHeat.value = dashVis.heat;
+  applySway(t);
   t.deckMat.uniforms.uLaneX.value = dashVis.laneX;
   t.deckMat.uniforms.uZ.value = dashVis.z;
   t.skyMat.uniforms.uSpeed.value = sn;
   t.skyMat.uniforms.uHeat.value = dashVis.heat;
-  const hot = 0.7 + sn * 1.5 + dashVis.heat * 1.1;
+  const hot = (0.7 + sn * 1.5 + dashVis.heat * 1.1) * (1 + sample.u * 0.35);
   t.pylonCyan.emissiveIntensity = hot;
-  t.pylonViolet.emissiveIntensity = 0.55 + sn * 1.1 + dashVis.heat * 1.6;
-  t.streakMat.color.copy(_cyan).lerp(_violet, dashVis.heat * 0.65);
+  t.pylonViolet.emissiveIntensity = (0.55 + sn * 1.1 + dashVis.heat * 1.6) * (1 + sample.u * 0.25);
   t.streakMat.opacity = 0.25 + sn * 0.55;
   t.moteMat.opacity = 0.15 + dashVis.heat * 0.45;
   t.doomedMat.emissiveIntensity = 1.15 + Math.sin(performance.now() * 0.009) * 0.65;
@@ -605,25 +721,60 @@ export function DashScenery() {
   const motes = useRef<THREE.InstancedMesh>(null);
   const leftP = useRef<THREE.InstancedMesh>(null);
   const rightP = useRef<THREE.InstancedMesh>(null);
-  const wallL = useRef<THREE.Mesh>(null);
-  const wallR = useRef<THREE.Mesh>(null);
-  const deck = useRef<THREE.Mesh>(null);
+  const wallL = useRef<THREE.InstancedMesh>(null);
+  const wallR = useRef<THREE.InstancedMesh>(null);
+  const deck = useRef<THREE.InstancedMesh>(null);
   const sky = useRef<THREE.Mesh>(null);
   const streakZ = useRef<Float32Array | null>(null);
   const moteZ = useRef<Float32Array | null>(null);
 
-  useFrame((_, delta) => {
+  useFrame((state, delta) => {
     const dt = Math.min(delta, 0.05);
+    watchGates();
     decay(dt);
     paintScroll(t);
     const z = dashVis.z;
-    const c = dashVis.centerAt;
-    if (sky.current) sky.current.position.set(c(z), 0, z);
-    if (deck.current) deck.current.position.set(c(z + 28), 0, z + 28);
-    if (wallL.current) wallL.current.position.set(c(z + 24) - 7.15, 2.7, z + 24);
-    if (wallR.current) wallR.current.position.set(c(z + 24) + 7.15, 2.7, z + 24);
+    const sample = actSample(z);
+    const cx = centerAt(z);
+    if (sky.current) sky.current.position.set(cx, 0, z);
+    const fog = state.scene.fog;
+    if (fog && 'color' in fog) (fog as THREE.Fog).color.copy(_fog);
 
     const high = dashVis.quality === 1;
+    const seg = high ? 8 : 16;
+    const slabs = high ? 20 : 10;
+    const base = Math.floor((z - 24) / seg) * seg;
+    const inset = 7.45 - sample.u * 0.55;
+    const wallH = 4.7 + sample.u * 1.45;
+    const placeWall = (mesh: THREE.InstancedMesh | null, side: number) => {
+      if (!mesh) return;
+      mesh.count = slabs;
+      for (let i = 0; i < slabs; i++) {
+        const sz = base + i * seg + seg * 0.5;
+        _dummy.position.set(centerAt(sz) + side * inset, wallH * 0.5, sz);
+        _dummy.rotation.set(0, side > 0 ? -Math.PI / 2 : Math.PI / 2, 0);
+        _dummy.scale.set(high ? 1 : 2, wallH, 1);
+        _dummy.updateMatrix();
+        mesh.setMatrixAt(i, _dummy.matrix);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+    };
+    placeWall(wallL.current, -1);
+    placeWall(wallR.current, 1);
+    const deckMesh = deck.current;
+    if (deckMesh) {
+      deckMesh.count = slabs;
+      for (let i = 0; i < slabs; i++) {
+        const sz = base + i * seg + seg * 0.5;
+        _dummy.position.set(centerAt(sz), 0, sz);
+        _dummy.rotation.set(-Math.PI / 2, 0, 0);
+        _dummy.scale.set(1, high ? 1 : 2, 1);
+        _dummy.updateMatrix();
+        deckMesh.setMatrixAt(i, _dummy.matrix);
+      }
+      deckMesh.instanceMatrix.needsUpdate = true;
+    }
+
     const sc = high ? 36 : 12;
     const mc = high ? 24 : 0;
     if (!streakZ.current) {
@@ -640,10 +791,10 @@ export function DashScenery() {
       for (let i = 0; i < sc; i++) {
         sz[i] -= dt * dashVis.speed * (1.15 + (i % 5) * 0.08);
         if (sz[i] < -12) sz[i] = 70 + (i % 7) * 4;
+        const wz = z + sz[i];
         const side = i % 2 === 0 ? -1 : 1;
-        const sZ = z + sz[i];
-        const x = c(sZ) + side * (6.15 + (i % 4) * 0.45);
-        _dummy.position.set(x, 1.1 + (i % 3) * 0.7, sZ);
+        const x = centerAt(wz) + side * (6.35 + (i % 4) * 0.4);
+        _dummy.position.set(x, 1.1 + (i % 3) * 0.7, wz);
         _dummy.scale.set(1, 0.7 + speedNorm(), 1);
         _dummy.rotation.set(0, 0, 0);
         _dummy.updateMatrix();
@@ -657,9 +808,9 @@ export function DashScenery() {
       for (let i = 0; i < mc; i++) {
         mz[i] += dt * dashVis.speed * 0.45;
         if (mz[i] > 96) mz[i] -= 100;
+        const mzWorld = z + mz[i] - 10;
         const side = i % 2 === 0 ? -1 : 1;
-        const mZ = z + mz[i] - 10;
-        _dummy.position.set(c(mZ) + side * (6.4 + (i % 5) * 0.7), 2.2 + (i % 4) * 0.8, mZ);
+        _dummy.position.set(centerAt(mzWorld) + side * (6.5 + (i % 5) * 0.55), 2.2 + (i % 4) * 0.8, mzWorld);
         _dummy.scale.setScalar(1);
         _dummy.rotation.set(0, 0, 0);
         _dummy.updateMatrix();
@@ -668,44 +819,104 @@ export function DashScenery() {
       if (mc > 0) mm.instanceMatrix.needsUpdate = true;
     }
 
-    const base = Math.floor(z / 8) * 8;
-    const placePylons = (mesh: THREE.InstancedMesh | null, x: number) => {
+    const gap = Math.max(4, 8 - sample.u * 2);
+    const lateral = 5.9 - sample.u * 0.3;
+    const pBase = Math.floor(z / gap) * gap;
+    const placePylons = (mesh: THREE.InstancedMesh | null, side: number) => {
       if (!mesh) return;
       const n = high ? 16 : 8;
       mesh.count = n;
+      const step = gap;
       for (let i = 0; i < n; i++) {
-        const tall = i % 4 === 0 ? 3.3 : 1.55;
-        const pZ = base + i * 8;
-        _dummy.position.set(c(pZ) + x, tall * 0.5, pZ);
-        _dummy.scale.set(1, tall, 1);
+        const pz = pBase + i * step;
+        const tall = (i % 4 === 0 ? 3.3 : 1.55) * (1 + sample.u * 0.25);
+        _dummy.position.set(centerAt(pz) + side * lateral, tall * 0.5, pz);
         _dummy.rotation.set(0, 0, 0);
+        _dummy.scale.set(1, tall, 1);
         _dummy.updateMatrix();
         mesh.setMatrixAt(i, _dummy.matrix);
       }
       mesh.instanceMatrix.needsUpdate = true;
     };
-    placePylons(leftP.current, -5.7);
-    placePylons(rightP.current, 5.7);
+    placePylons(leftP.current, -1);
+    placePylons(rightP.current, 1);
   });
 
   return (
     <group>
       <mesh ref={sky} geometry={t.skyGeo} material={t.skyMat} frustumCulled={false} />
-      <mesh
-        ref={deck}
-        geometry={t.deckGeo}
-        material={t.deckMat}
-        rotation={[-Math.PI / 2, 0, 0]}
-        frustumCulled={false}
-      />
-      <mesh ref={wallL} geometry={t.wallGeo} material={t.wallMat} rotation={[0, Math.PI / 2, 0]} frustumCulled={false} />
-      <mesh ref={wallR} geometry={t.wallGeo} material={t.wallMat} rotation={[0, -Math.PI / 2, 0]} frustumCulled={false} />
+      <instancedMesh ref={deck} args={[t.deckGeo, t.deckMat, 20]} frustumCulled={false} />
+      <instancedMesh ref={wallL} args={[t.wallGeo, t.wallMat, 20]} frustumCulled={false} />
+      <instancedMesh ref={wallR} args={[t.wallGeo, t.wallMat, 20]} frustumCulled={false} />
       <instancedMesh ref={leftP} args={[t.pylonGeo, t.pylonCyan, 16]} frustumCulled={false} />
       <instancedMesh ref={rightP} args={[t.pylonGeo, t.pylonViolet, 16]} frustumCulled={false} />
       <instancedMesh ref={streaks} args={[t.streakGeo, t.streakMat, 36]} frustumCulled={false} />
       <instancedMesh ref={motes} args={[t.moteGeo, t.moteMat, 24]} frustumCulled={false} />
     </group>
   );
+}
+
+/** One arch across all three lanes. No side portals. */
+export function ActGate() {
+  const mesh = useRef<THREE.InstancedMesh>(null);
+  const geo = useMemo(() => new THREE.BoxGeometry(1, 1, 1), []);
+  const mat = useMemo(() => {
+    const m = new THREE.MeshStandardMaterial({
+      color: '#061018',
+      emissive: '#3ecfff',
+      emissiveIntensity: 1.4,
+      roughness: 0.32,
+      metalness: 0.22,
+    });
+    m.toneMapped = false;
+    return m;
+  }, []);
+
+  useFrame(() => {
+    const im = mesh.current;
+    if (!im) return;
+    const list = dashVis.gates;
+    let next = Number.POSITIVE_INFINITY;
+    let dest = 1;
+    for (let i = 0; i < list.length; i++) {
+      if (list[i] > dashVis.z - 6) {
+        next = list[i];
+        dest = Math.min(2, i + 1);
+        break;
+      }
+    }
+    const ahead = next - dashVis.z;
+    if (!Number.isFinite(next) || ahead > 150 || ahead < -6) {
+      im.count = 0;
+      return;
+    }
+    im.count = 3;
+    const approach = 1 - THREE.MathUtils.clamp(ahead / 90, 0, 1);
+    const height = 3.6 + approach * 3.4;
+    const cx = centerAt(next);
+    const half = 6.2;
+    mat.emissive.copy(ACT_A[dest]);
+    mat.emissiveIntensity = 0.55 + approach * 2.1 + dashVis.flash * 0.4;
+
+    _dummy.rotation.set(0, 0, 0);
+    _dummy.position.set(cx - half, height * 0.5, next);
+    _dummy.scale.set(0.72, height, 0.72);
+    _dummy.updateMatrix();
+    im.setMatrixAt(0, _dummy.matrix);
+
+    _dummy.position.set(cx + half, height * 0.5, next);
+    _dummy.scale.set(0.72, height, 0.72);
+    _dummy.updateMatrix();
+    im.setMatrixAt(1, _dummy.matrix);
+
+    _dummy.position.set(cx, height + 0.32, next);
+    _dummy.scale.set(half * 2 + 0.72, 0.64, 0.72);
+    _dummy.updateMatrix();
+    im.setMatrixAt(2, _dummy.matrix);
+    im.instanceMatrix.needsUpdate = true;
+  });
+
+  return <instancedMesh ref={mesh} args={[geo, mat, 3]} frustumCulled={false} />;
 }
 
 const TRAIL_N = 12;
@@ -725,17 +936,17 @@ export function PlayerRig() {
     const dt = Math.min(delta, 0.05);
     const high = dashVis.quality === 1;
     if (dashVis.z - lastZ.current > 0.55 || samples.current.length === 0) {
-      samples.current.push({ x: dashVis.laneX, y: 0.62, z: dashVis.z });
+      samples.current.push({ x: worldX(), y: 0.62, z: dashVis.z });
       if (samples.current.length > TRAIL_N) samples.current.shift();
       lastZ.current = dashVis.z;
     } else if (samples.current.length) {
       const tip = samples.current[samples.current.length - 1];
-      tip.x = dashVis.laneX;
+      tip.x = worldX();
       tip.z = dashVis.z;
     }
     if (orb.current) {
       const punch = 1 + dashVis.reward * 0.18 - dashVis.contact * 0.08;
-      orb.current.position.set(dashVis.laneX, 0.62, dashVis.z);
+      orb.current.position.set(worldX(), 0.62, dashVis.z);
       orb.current.scale.setScalar(punch);
     }
     const mesh = trail.current;
@@ -746,7 +957,7 @@ export function PlayerRig() {
       for (let i = 0; i < n; i++) {
         const p = pts[Math.max(0, pts.length - 1 - i)];
         const fade = 1 - i / n;
-        _dummy.position.set(p ? p.x : dashVis.laneX, 0.62, p ? p.z : dashVis.z);
+        _dummy.position.set(p ? p.x : worldX(), 0.62, p ? p.z : dashVis.z);
         _dummy.scale.setScalar(p ? 0.35 + fade * 0.7 : 0);
         _dummy.rotation.set(0, 0, 0);
         _dummy.updateMatrix();
@@ -764,7 +975,7 @@ export function PlayerRig() {
       ringT.current = Math.min(1, ringT.current + dt * (dashVis.finish > 0.4 ? 0.7 : 1.35));
       const k = ringT.current;
       ring.current.visible = k < 1;
-      ring.current.position.set(dashVis.laneX, 0.7, dashVis.z - 0.9);
+      ring.current.position.set(worldX(), 0.7, dashVis.z - 0.9);
       ring.current.scale.setScalar(0.4 + k * 2.1);
       t.ringMat.opacity = (1 - k) * 0.9;
     } else if (ring.current) {
@@ -798,7 +1009,7 @@ export function RewardLayer() {
       if (pool.current.length >= cap) pool.current.shift();
       const ang = Math.random() * Math.PI * 2;
       pool.current.push({
-        x: dashVis.laneX + Math.cos(ang) * spread * 0.25,
+        x: worldX() + Math.cos(ang) * spread * 0.25,
         y: 0.55 + Math.random() * 0.5,
         z: dashVis.z - Math.random() * 0.4,
         vx: Math.cos(ang) * spread,

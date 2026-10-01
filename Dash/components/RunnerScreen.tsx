@@ -12,11 +12,12 @@ import type { MeshStandardMaterial as THREE_Mat } from 'three';
 import type { Socket } from 'socket.io-client';
 import { loadPB, savePB, compare, PersonalBest, Beaten } from '../engine/RunnerPB';
 import {
-  pushRunState, noteToken, noteContact, noteFinish, setDashQuality,
+  pushRunState, noteToken, noteContact, noteFinish, setDashQuality, setCenterAt,
+  dashVis, ActGate,
   getHazardMaterial, getTokenMaterial, getDoomedMaterial,
   DashScenery, PlayerRig, RewardLayer,
 } from './dashTheme';
-import { unlockAudio, playToken, playContact, playFinish } from '../services/rewardAudio';
+import { unlockAudio, playToken, playContact, playFinish, playGate } from '../services/rewardAudio';
 
 import {
   generateRun, laneX, trackCenter, RunCourse,
@@ -320,8 +321,28 @@ const REPORT_EVERY_STEPS = 60;
 
 function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud, socket, ghost, onTrace }: LoopProps) {
   const { camera } = useThree();
-  // Stable across frames so the pack is not handed a new closure every tick.
-  const centerFn = useMemo(() => (z: number) => trackCenter(course, z), [course]);
+  /**
+   * The pack ships a stand-in centreline for its own preview. This course
+   * generates a different one with seed-dependent phases, so both the JS and
+   * the GLSL copy have to be pointed at the real curve — otherwise the scenery
+   * and the painted lane markings sway on a path the lanes never take.
+   */
+  useMemo(() => {
+    setCenterAt((z: number) => trackCenter(course, z), course.sway);
+    /**
+     * Gate positions, replacing the pack's 620/1280 defaults.
+     *
+     * Those were tuned for its own preview. On this course they would put 62%
+     * of a typical 3400-unit run inside act three. 1100 and 2300 split it into
+     * near-thirds AND land on real transitions in the difficulty ramp — gaps
+     * run 38 units at 1100 and 19 at 2300, with two-lane rows going 16% to
+     * 47%. So the gate announces something true: it does get harder here.
+     *
+     * Fixed z, not time, so every player crosses at the same point of the same
+     * course regardless of how fast they got there.
+     */
+    dashVis.gates = [1100, 2300];
+  }, [course]);
   const acc = useRef(0);
   /** Wall clock of sim step 0, so a step index can be converted to a time. */
   const t0 = useRef(0);
@@ -336,6 +357,7 @@ function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud, socket, ghost, o
   const stepNo = useRef(0);
   const trace = useRef<[number, number][]>([]);
   const started = useRef(false);
+  const lastGateSeq = useRef(0);
 
   useFrame((_, delta) => {
     const s = stateRef.current;
@@ -372,6 +394,13 @@ function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud, socket, ghost, o
       if (ev.picked) { noteToken(); playToken(s.streak); }
       if (ev.crashed) { noteContact(); playContact(); }
 
+      // The pack bumps gateSeq when a gate is crossed; the sound is the host's
+      // to play, so it stays on the same event path as every other cue.
+      if (dashVis.gateSeq !== lastGateSeq.current) {
+        lastGateSeq.current = dashVis.gateSeq;
+        playGate();
+      }
+
       if (socket && stepNo.current % REPORT_EVERY_STEPS === 0) {
         socket.emit('parity:progress', { step: stepNo.current, z: s.z, tokens: s.tokens });
       }
@@ -400,9 +429,6 @@ function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud, socket, ghost, o
       z: s.z,
       laneX: playerX(course, s),
       streak: s.streak,
-      // The pack pins its scenery to absolute x; this course sways by up to
-      // 18 units, so without it the player drives through the canyon walls.
-      centerAt: centerFn,
     });
 
     const px = playerX(course, s);
@@ -421,6 +447,43 @@ function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud, socket, ghost, o
     }
   });
   return null;
+}
+
+/**
+ * Divergence warning.
+ *
+ * Distance-driven, never a clock: the countdown is how far the gate is divided
+ * by current speed, so slowing down genuinely buys you more warning and the
+ * number means the same thing to everyone. Rendered as DOM rather than in the
+ * scene so it cannot occlude a row.
+ */
+function GateWarning() {
+  const [secs, setSecs] = useState<number | null>(null);
+
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      const next = (dashVis.gates ?? []).find((g: number) => g > dashVis.z);
+      const eta = next === undefined ? Infinity : (next - dashVis.z) / Math.max(1, dashVis.speed);
+      setSecs(eta <= 5 ? Math.max(1, Math.ceil(eta)) : null);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
+  if (secs === null) return null;
+  return (
+    <div style={{
+      position: 'fixed', top: '13%', left: 0, right: 0, textAlign: 'center',
+      pointerEvents: 'none', fontFamily: 'ui-monospace, monospace',
+    }}>
+      <div style={{ fontSize: 13, letterSpacing: '.3em', color: '#00e7ff', opacity: .9 }}>
+        COURSE DIVERGENCE INCOMING
+      </div>
+      <div style={{ fontSize: 54, fontWeight: 800, color: '#ffffff', lineHeight: 1.1 }}>{secs}</div>
+    </div>
+  );
 }
 
 // ── Screen ────────────────────────────────────────────────────────────────────
@@ -532,6 +595,7 @@ export default function RunnerScreen({
         <directionalLight position={[10, 25, 8]} intensity={1.1} castShadow />
         <fog attach="fog" args={['#0a0a0f', 60, 170]} />
         <DashScenery />
+        <ActGate />
         <Track course={course} zRef={zRef} />
         <Hazards course={course} zRef={zRef} />
         <PlayerRig />
@@ -593,6 +657,7 @@ export default function RunnerScreen({
           </div>
         )}
         <div style={{ opacity: .45, marginTop: 4 }}>A/D or arrows — that is the whole control scheme</div>
+        <GateWarning />
       </div>
 
       {final && (

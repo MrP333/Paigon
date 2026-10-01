@@ -41,6 +41,11 @@ export function playContact() {
   tone(180, 0.16, 'sine', 0.07, 0.45);
 }
 
+export function playGate() {
+  tone(150, 0.08, 'sine', 0.07, 0.55);
+  tone(620, 0.06, 'triangle', 0.045, 1.35);
+}
+
 export function playFinish() {
   tone(523, 0.18, 'triangle', 0.06, 1);
   window.setTimeout(() => tone(659, 0.18, 'triangle', 0.06, 1), 90);
