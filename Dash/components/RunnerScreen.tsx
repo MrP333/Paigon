@@ -8,6 +8,7 @@
 import { useRef, useState, useEffect, useMemo } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Vector3, Color } from 'three';
+import type { MeshStandardMaterial as THREE_Mat } from 'three';
 import type { Socket } from 'socket.io-client';
 import { loadPB, savePB, PersonalBest } from '../engine/RunnerPB';
 
@@ -21,6 +22,13 @@ import {
 
 const VIEW_AHEAD  = 130;
 const VIEW_BEHIND = 25;
+
+/**
+ * How far ahead the token line reads as "live". Shorter than VIEW_AHEAD on
+ * purpose: the player should see the whole course to plan, but only commit to
+ * a short segment of line at a time.
+ */
+const LIVE_LEAD = 34;
 
 /**
  * Which way lane index runs on screen.
@@ -64,6 +72,62 @@ function Track({ course, zRef }: { course: RunCourse; zRef: React.MutableRefObje
   );
 }
 
+/**
+ * The token line.
+ *
+ * Only the stretch inside LIVE_LEAD is lit; beyond it the line is dim, so the
+ * eye tracks a short live segment rather than a long gold carpet. A trail that
+ * dead-ends into a blocked lane burns amber from the moment it enters view,
+ * which turns the one-in-three betrayal into a beat the player can learn
+ * instead of a trap they have to memorise per seed.
+ *
+ * Lighting is mutated per frame through material refs rather than by
+ * re-rendering. Which tokens are MOUNTED changes only every 20 units, so
+ * driving the glow off React state would make it step in 20-unit jumps —
+ * which is the exact artefact this is supposed to remove.
+ */
+function TokenLine({ course, tokens, zRef }: {
+  course: RunCourse;
+  tokens: { z: number; lane: number; doomed?: boolean }[];
+  zRef: React.MutableRefObject<number>;
+}) {
+  const mats = useRef<(THREE_Mat | null)[]>([]);
+
+  useFrame(({ clock }) => {
+    const zNow = zRef.current;
+    const pulse = 0.72 + 0.28 * Math.sin(clock.elapsedTime * 5.2);
+    for (let i = 0; i < tokens.length; i++) {
+      const m = mats.current[i];
+      if (!m) continue;
+      const ahead = tokens[i].z - zNow;
+      const live = ahead > -2 && ahead < LIVE_LEAD;
+      if (!live) { m.emissiveIntensity = 0.16; m.opacity = 0.3; continue; }
+      // Doomed trails pulse, so the warning reads as urgency rather than as
+      // just another colour the player has to have been told about.
+      m.emissiveIntensity = tokens[i].doomed ? 2.0 * pulse : 1.15;
+      m.opacity = 1;
+    }
+  });
+
+  return (
+    <>
+      {tokens.map((t, i) => {
+        const col = t.doomed ? '#ff9a3c' : '#ffd76a';
+        return (
+          <mesh key={`${t.z}-${t.lane}`} position={[laneX(course, t.lane, t.z), 0.8, t.z]}>
+            <octahedronGeometry args={[t.doomed ? 0.46 : 0.5]} />
+            <meshStandardMaterial
+              ref={(el: any) => { mats.current[i] = el; }}
+              color={col} emissive={new Color(col)} emissiveIntensity={1.1}
+              transparent opacity={1}
+            />
+          </mesh>
+        );
+      })}
+    </>
+  );
+}
+
 // ── Hazards and shards, windowed around the player ────────────────────────────
 
 function Hazards({ course, zRef }: { course: RunCourse; zRef: React.MutableRefObject<number> }) {
@@ -93,12 +157,13 @@ function Hazards({ course, zRef }: { course: RunCourse; zRef: React.MutableRefOb
           ))}
         </group>
       ))}
-      {tokens.map((t: {z:number;lane:number}) => (
-        <mesh key={`${t.z}-${t.lane}`} position={[laneX(course, t.lane, t.z), 0.8, t.z]}>
-          <octahedronGeometry args={[0.5]} />
-          <meshStandardMaterial color="#ffd76a" emissive={new Color('#ffd76a')} emissiveIntensity={1.1} />
-        </mesh>
-      ))}
+      {/* The line is a read, not a ribbon to vacuum.
+          Only the stretch inside LIVE_LEAD is lit; past that it is dim, so the
+          eye tracks a short live segment instead of a long gold carpet. A
+          trail that dead-ends into a blocked lane is amber from the moment it
+          enters view, which turns the one-in-three betrayal into a beat the
+          player can learn rather than a trap they memorise per seed. */}
+      <TokenLine course={course} tokens={tokens} zRef={zRef} />
     </>
   );
 }

@@ -172,6 +172,13 @@ export interface HazardRow {
 export interface Token {
   z: number;
   lane: number;
+  /**
+   * This trail runs into a lane that is blocked at the row ahead. Purely a
+   * rendering hint — collection and scoring never read it — but it has to be
+   * generated rather than derived on the client, so every player is warned at
+   * exactly the same moment.
+   */
+  doomed?: boolean;
 }
 
 /** Distance between tokens along a trail. */
@@ -348,7 +355,7 @@ function placeTokens(
 ) {
   if (prevZ <= 0) return;
   const blockedAhead = [0, 1, 2].filter(l => !nowOpen.includes(l));
-  const temptation = blockedAhead.length > 0 && rng() < 0.34;
+  const temptation = blockedAhead.length > 0 && rng() < 0.22;
   const lane = temptation
     ? blockedAhead[Math.floor(rng() * blockedAhead.length)]
     : nowOpen[Math.floor(rng() * nowOpen.length)];
@@ -357,7 +364,7 @@ function placeTokens(
   // rather than as luring you into something you could not see.
   const end = temptation ? rowZ - TOKEN_SPACING * 1.6 : rowZ;
   for (let z = prevZ + TOKEN_SPACING; z < end; z += TOKEN_SPACING) {
-    course.tokens.push({ z, lane });
+    course.tokens.push(temptation ? { z, lane, doomed: true } : { z, lane });
   }
 }
 
