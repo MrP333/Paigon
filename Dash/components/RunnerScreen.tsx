@@ -11,6 +11,12 @@ import { Vector3, Color } from 'three';
 import type { MeshStandardMaterial as THREE_Mat } from 'three';
 import type { Socket } from 'socket.io-client';
 import { loadPB, savePB, compare, PersonalBest, Beaten } from '../engine/RunnerPB';
+import {
+  pushRunState, noteToken, noteContact, noteFinish, setDashQuality,
+  getHazardMaterial, getTokenMaterial, getDoomedMaterial,
+  DashScenery, PlayerRig, RewardLayer,
+} from './dashTheme';
+import { unlockAudio, playToken, playContact, playFinish } from '../services/rewardAudio';
 
 import {
   generateRun, laneX, trackCenter, RunCourse,
@@ -92,6 +98,25 @@ function TokenLine({ course, tokens, zRef }: {
   tokens: { z: number; lane: number; doomed?: boolean }[];
   zRef: React.MutableRefObject<number>;
 }) {
+  /**
+   * A bounded pool, cloned once from the pack's materials.
+   *
+   * The pack asks for one shared material per kind, which is right for
+   * hazards — they are drawn in bulk. It cannot work for tokens, because the
+   * live window lights each one by its distance ahead, and a shared material
+   * would mean the last token written wins. Cloning per render would leak a
+   * material every time the view bucket advances, so the pool is fixed and
+   * indexed instead: colour and emissive still come from the pack, the count
+   * is capped, and nothing is allocated per frame.
+   *
+   * Only ~34 tokens are ever on screen (VIEW_AHEAD / TOKEN_SPACING), so 48 is
+   * headroom rather than a limit.
+   */
+  const POOL = 48;
+  const pool = useMemo(() => ({
+    safe: Array.from({ length: POOL }, () => getTokenMaterial().clone()),
+    doomed: Array.from({ length: POOL }, () => getDoomedMaterial().clone()),
+  }), []);
   const mats = useRef<(THREE_Mat | null)[]>([]);
 
   useFrame(({ clock }) => {
@@ -113,15 +138,14 @@ function TokenLine({ course, tokens, zRef }: {
   return (
     <>
       {tokens.map((t, i) => {
-        const col = t.doomed ? '#ff9a3c' : '#ffd76a';
         return (
-          <mesh key={`${t.z}-${t.lane}`} position={[laneX(course, t.lane, t.z), 0.8, t.z]}>
+          <mesh
+            key={`${t.z}-${t.lane}`}
+            position={[laneX(course, t.lane, t.z), 0.8, t.z]}
+            material={(t.doomed ? pool.doomed : pool.safe)[i % POOL]}
+            ref={() => { mats.current[i] = (t.doomed ? pool.doomed : pool.safe)[i % POOL]; }}
+          >
             <octahedronGeometry args={[t.doomed ? 0.46 : 0.5]} />
-            <meshStandardMaterial
-              ref={(el: any) => { mats.current[i] = el; }}
-              color={col} emissive={new Color(col)} emissiveIntensity={1.1}
-              transparent opacity={1}
-            />
           </mesh>
         );
       })}
@@ -150,10 +174,11 @@ function Hazards({ course, zRef }: { course: RunCourse; zRef: React.MutableRefOb
     <>
       {rows.map(r => (
         <group key={r.z}>
+          {/* One shared hazard material, never cloned per box: these are drawn
+              in bulk every frame and per-box materials would hitch. */}
           {r.blocked.map(l => (
-            <mesh key={l} position={[laneX(course, l, r.z), 1, r.z]} castShadow>
+            <mesh key={l} position={[laneX(course, l, r.z), 1, r.z]} material={getHazardMaterial()}>
               <boxGeometry args={[LANE_W * 0.92, 2, 0.7]} />
-              <meshStandardMaterial color="#c0392b" emissive={new Color('#c0392b')} emissiveIntensity={0.4} />
             </mesh>
           ))}
         </group>
@@ -313,7 +338,12 @@ function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud, socket, ghost, o
       if (steer !== 0) trace.current.push([stepNo.current, steer]);
 
       const input: RunnerInput = { steer };
-      step(course, s, input);
+      const ev = step(course, s, input);
+
+      // Reward feedback fires off the simulation's own events, so what the
+      // player sees and hears is the same thing the server will later replay.
+      if (ev.picked) { noteToken(); playToken(s.streak); }
+      if (ev.crashed) { noteContact(); playContact(); }
 
       if (socket && stepNo.current % REPORT_EVERY_STEPS === 0) {
         socket.emit('parity:progress', { step: stepNo.current, z: s.z, tokens: s.tokens });
@@ -335,6 +365,16 @@ function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud, socket, ghost, o
 
     zRef.current = s.z;
 
+    // Visual state is pushed, never held in React: these change every frame and
+    // re-rendering for them would cost more than the effects they drive.
+    // `threat` is omitted deliberately — the pack declares it but never reads it.
+    pushRunState({
+      speed: s.speed,
+      z: s.z,
+      laneX: playerX(course, s),
+      streak: s.streak,
+    });
+
     const px = playerX(course, s);
     camera.position.lerp(new Vector3(px * 0.6 + trackCenter(course, s.z) * 0.4, 5.2, s.z - 9), 0.12);
     camera.lookAt(trackCenter(course, s.z + 20), 0.8, s.z + 20);
@@ -344,34 +384,13 @@ function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud, socket, ghost, o
 
     if (s.finished && !done.current) {
       done.current = true;
+      noteFinish(); playFinish();
       socket?.emit('parity:finish', { tokens: s.tokens, trace: trace.current });
       onTrace?.(trace.current);
       onEnd(s);
     }
   });
   return null;
-}
-
-function Player({ course, stateRef }: { course: RunCourse; stateRef: React.MutableRefObject<RunnerState> }) {
-  const ref = useRef<any>(null);
-  useFrame(() => {
-    const s = stateRef.current;
-    if (!ref.current) return;
-    ref.current.position.set(playerX(course, s), 0.5, s.z);
-    const m = ref.current.material;
-    // Brightness tracks charge, so how well the run is going is readable off
-    // the ball itself rather than off a meter.
-    const hot = Math.min(1, Math.max(0, (s.speed - RESET_SPEED) / 18));
-    m.emissiveIntensity = s.immuneS > 0 ? 2.4 : 0.5 + hot * 1.6;
-    m.color.set(s.immuneS > 0 ? '#ff3b30' : '#41d6ff');
-    m.emissive.set(s.immuneS > 0 ? '#ff3b30' : '#41d6ff');
-  });
-  return (
-    <mesh ref={ref} castShadow>
-      <sphereGeometry args={[0.55, 20, 16]} />
-      <meshStandardMaterial color="#41d6ff" emissive={new Color('#41d6ff')} emissiveIntensity={0.8} roughness={0.25} />
-    </mesh>
-  );
 }
 
 // ── Screen ────────────────────────────────────────────────────────────────────
@@ -412,6 +431,10 @@ export default function RunnerScreen({
    * with myTokens null rather than a score, because a run that failed
    * validation did not happen as far as the result is concerned.
    */
+  // Browsers will not start audio without a gesture. The click that begins a
+  // run is the only one guaranteed to exist.
+  useEffect(() => { unlockAudio(); }, [runId]);
+
   useEffect(() => {
     if (!socket || solo || !onResult) return;
     const onDone = (d: any) => onResult({
@@ -478,9 +501,11 @@ export default function RunnerScreen({
         <ambientLight intensity={0.5} />
         <directionalLight position={[10, 25, 8]} intensity={1.1} castShadow />
         <fog attach="fog" args={['#0a0a0f', 60, 170]} />
+        <DashScenery />
         <Track course={course} zRef={zRef} />
         <Hazards course={course} zRef={zRef} />
-        <Player course={course} stateRef={stateRef} />
+        <PlayerRig />
+        <RewardLayer />
         <GhostRider course={course} ghost={ghostRun} />
         <Loop
           key={runId}
