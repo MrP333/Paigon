@@ -10,14 +10,15 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Vector3, Color } from 'three';
 import type { MeshStandardMaterial as THREE_Mat } from 'three';
 import type { Socket } from 'socket.io-client';
-import { loadPB, savePB, PersonalBest } from '../engine/RunnerPB';
+import { loadPB, savePB, compare, PersonalBest, Beaten } from '../engine/RunnerPB';
 
 import {
   generateRun, laneX, trackCenter, RunCourse,
   LANES, LANE_W, RESET_SPEED, RACE_MS,
 } from '../engine/RunnerCourse';
 import {
-  initialState, step, playerX, RunnerState, RunnerInput, FIXED_DT, estimateReaction,
+  initialState, step, playerX, RunnerState, RunnerInput, FIXED_DT,
+  estimateReaction, ceilingTokens,
 } from '../engine/RunnerPhysics';
 
 const VIEW_AHEAD  = 130;
@@ -400,6 +401,7 @@ export default function RunnerScreen({
   const [rejected, setRejected] = useState<string | null>(null);
   const [pb, setPb] = useState<PersonalBest | null>(() => loadPB(roomCode));
   const [beatPB, setBeatPB] = useState(false);
+  const [beaten, setBeaten] = useState<Beaten | null>(null);
   const traceRef = useRef<[number, number][]>([]);
   const ghostRun = usePBGhost(course, pb, runId);
   const ghostsRef = useRef<Map<string, Rival>>(new Map());
@@ -490,11 +492,15 @@ export default function RunnerScreen({
             setFinal(s);
             // PBs are per-course: the seed is the level, so a best is only
             // meaningful against the course it was set on.
-            const beat = savePB(roomCode, {
+            const run: PersonalBest = {
               tokens: s.tokens, streak: s.bestStreak, contacts: s.crashes,
+              closing: s.bands[2],
+              greedPct: s.greedSeen ? (s.greedTook / s.greedSeen) * 100 : 0,
               reactionMs: estimateReaction(s) === null ? null : Math.round(estimateReaction(s)! * 1000),
               trace: traceRef.current, at: Date.now(),
-            });
+            };
+            setBeaten(compare(loadPB(roomCode), run));
+            const beat = savePB(roomCode, run);
             setBeatPB(beat);
             if (beat) setPb(loadPB(roomCode));
           }}
@@ -583,6 +589,29 @@ export default function RunnerScreen({
               </div>
             ))}
           </div>
+          {/* Display only — none of this pays. The money score is the raw
+              token count; these describe HOW it was earned so a run is worth
+              reading back rather than just a number. All derived from the
+              trace, so the server reproduces the same figures. */}
+          <div style={{
+            display: 'flex', gap: 22, marginTop: 16, justifyContent: 'center',
+            fontFamily: 'ui-monospace, monospace', opacity: .9,
+          }}>
+            {[
+              ['line', `${(final.safeTook / Math.max(1, final.safeSeen) * 100).toFixed(0)}%`,
+               'of the holdable line you took'],
+              ['greed', `${(final.greedTook / Math.max(1, final.greedSeen) * 100).toFixed(0)}%`,
+               'squeezed from dead-end trails'],
+              ['ceiling', String(ceilingTokens(final).took),
+               `taken above ${ceilingTokens(final).threshold} u/s`],
+            ].map(([label, value, title]) => (
+              <div key={label} title={title} style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 18, fontWeight: 700, color: '#41d6ff' }}>{value}</div>
+                <div style={{ fontSize: 9, opacity: .45, letterSpacing: '.12em', textTransform: 'uppercase' }}>{label}</div>
+              </div>
+            ))}
+          </div>
+
           {estimateReaction(final) !== null && (
             <div style={{ marginTop: 12, fontSize: 13, opacity: .8 }}>
               you played at a{' '}
@@ -596,9 +625,15 @@ export default function RunnerScreen({
 
           {/* The seed is the level, so the only comparison that means anything
               is against your own runs on THIS course. */}
-          {beatPB && pb && (
-            <div style={{ marginTop: 10, color: '#ffd76a', fontWeight: 700, fontSize: 13 }}>
-              NEW BEST ON THIS COURSE
+          {/* Three things to chase on the same course, so a run that scored
+              less can still have improved something worth coming back for. */}
+          {beaten && (beaten.tokens || beaten.closing || beaten.greed) && (
+            <div style={{ marginTop: 10, color: '#ffd76a', fontWeight: 700, fontSize: 12, letterSpacing: '.06em' }}>
+              {[
+                beaten.tokens && 'NEW BEST',
+                beaten.closing && 'BEST CLOSE',
+                beaten.greed && 'BEST GREED',
+              ].filter(Boolean).join('  ·  ')}
             </div>
           )}
           {!beatPB && pb && (
@@ -621,7 +656,7 @@ export default function RunnerScreen({
             <button onClick={() => {
               stateRef.current = initialState(); zRef.current = 0;
               traceRef.current = [];
-              setFinal(null); setBeatPB(false); setRunId(n => n + 1);
+              setFinal(null); setBeatPB(false); setBeaten(null); setRunId(n => n + 1);
             }}
               style={{ ...mono, padding: '10px 22px', background: '#41d6ff', color: '#08080c', border: 0, borderRadius: 8, cursor: 'pointer', fontWeight: 700 }}>
               {pb ? 'Same course — beat ' + pb.tokens : 'Same course'}

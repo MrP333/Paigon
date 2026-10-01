@@ -42,7 +42,7 @@ for (const code of ['SEED1','SEED2','SEED3']) {
 // 2 — PB storage round-trips and only overwrites on an improvement
 const t1 = play(generateRun('PBTEST'), 0.30, 1);
 const t2 = play(generateRun('PBTEST'), 0.15, 2);
-const mk=(r:any)=>({tokens:r.s.tokens,streak:r.s.bestStreak,contacts:r.s.crashes,reactionMs:null,trace:r.trace,at:Date.now()});
+const mk=(r:any)=>({tokens:r.s.tokens,streak:r.s.bestStreak,contacts:r.s.crashes,closing:r.s.bands[2],greedPct:r.s.greedSeen?r.s.greedTook/r.s.greedSeen*100:0,reactionMs:null,trace:r.trace,at:Date.now()});
 console.log(`\nfirst save        : ${PB.savePB('PBTEST', mk(t1))} (expect true)`);
 console.log(`worse run saves   : ${PB.savePB('PBTEST', mk(t1))} (expect false — equal is not better)`);
 const better = t2.s.tokens > t1.s.tokens;

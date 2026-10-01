@@ -21,6 +21,9 @@ import {
 /** 120Hz. Fine enough that a 0.18s lane change resolves smoothly. */
 export const FIXED_DT = 1 / 120;
 
+/** One bucket per whole u/s, covering the full range speed can reach. */
+export const SPEED_BUCKETS = 128;
+
 /** Half-width of the player, for the collision band. */
 export const PLAYER_HALF = 0.85;
 /**
@@ -83,6 +86,25 @@ export interface RunnerState {
   bands: [number, number, number];
   /** Step index of the most recent token. Final tiebreak. */
   lastTokenStep: number;
+  /**
+   * Display metrics. None of these pay — the money score is the raw token
+   * count — but all are derived from the replay, so the server reproduces the
+   * same numbers from the same trace rather than taking the client's word.
+   *
+   *  safeSeen/safeTook   tokens on a lane that was still open at the next row,
+   *                      i.e. a line you could have held. The ratio is how much
+   *                      of the available line you actually took.
+   *  greedSeen/greedTook tokens on a trail that dead-ends into a blocked lane.
+   *                      The ratio is how much you squeezed out before bailing.
+   *  speedHist/tokenHist time spent and tokens taken, bucketed by whole u/s.
+   *                      Kept as histograms because the "top quarter of your
+   *                      own speed" threshold is not knowable until the run is
+   *                      over, and storing per-token speeds would be hundreds
+   *                      of entries to ship and replay.
+   */
+  safeSeen: number; safeTook: number;
+  greedSeen: number; greedTook: number;
+  speedHist: number[]; tokenHist: number[];
   /** Steps between a row becoming current and the first input after it. */
   reactionSamples: number[];
   pendingRowStep: number;
@@ -101,6 +123,8 @@ export function initialState(): RunnerState {
     immuneS: 0, cleanS: 0, bestCleanS: 0,
     tokens: 0, tokensSeen: 0,
     streak: 0, bestStreak: 0, bands: [0, 0, 0], lastTokenStep: -1,
+    safeSeen: 0, safeTook: 0, greedSeen: 0, greedTook: 0,
+    speedHist: new Array(SPEED_BUCKETS).fill(0), tokenHist: new Array(SPEED_BUCKETS).fill(0),
     reactionSamples: [], pendingRowStep: -1, stepNo: 0,
     elapsedS: 0, shards: 0, crashes: 0,
     rowCursor: 0, shardCursor: 0,
@@ -151,6 +175,9 @@ export function step(
   s.speed = Math.min(ceiling, s.speed + CHARGE_RATE * dt);
   if (s.immuneS > 0) s.immuneS = Math.max(0, s.immuneS - dt);
 
+  const bucket = Math.min(SPEED_BUCKETS - 1, Math.max(0, Math.floor(s.speed)));
+  s.speedHist[bucket]++;
+
   const z0 = s.z;
   s.z += s.speed * dt;
 
@@ -159,10 +186,13 @@ export function step(
     const tk = course.tokens[s.shardCursor];
     if (tk.z >= z0) {
       s.tokensSeen++;
+      if (tk.doomed) s.greedSeen++; else s.safeSeen++;
       // Collected on lane overlap, same band as a hazard — so threading a gap
       // and taking the token are the same act of precision.
       if (Math.abs(s.lanePos - tk.lane) * LANE_W < HIT_DIST) {
         s.tokens++; ev.picked++;
+        if (tk.doomed) s.greedTook++; else s.safeTook++;
+        s.tokenHist[bucket]++;
         s.lastTokenStep = s.stepNo;
         s.bands[s.elapsedS < 25 ? 0 : s.elapsedS < 60 ? 1 : 2]++;
         s.streak++;
@@ -218,4 +248,26 @@ export function estimateReaction(s: RunnerState): number | null {
   const xs = s.reactionSamples.filter(v => v > 0 && v < 2).sort((a, b) => a - b);
   if (xs.length < 8) return null;
   return xs[xs.length >> 1];
+}
+
+/**
+ * Tokens taken while running in the top quarter of this run's own speed.
+ *
+ * The threshold is per-run on purpose: a player who never got above 30 u/s
+ * should still be measured against their own ceiling, not against someone
+ * else's. Computed by time, so it is the speed you spent a quarter of the
+ * race at or above — not a quarter of the range, which a single fast burst
+ * would skew.
+ */
+export function ceilingTokens(s: RunnerState): { took: number; threshold: number } {
+  const total = s.speedHist.reduce((a, b) => a + b, 0);
+  if (!total) return { took: 0, threshold: 0 };
+  let acc = 0, threshold = 0;
+  for (let i = s.speedHist.length - 1; i >= 0; i--) {
+    acc += s.speedHist[i];
+    if (acc >= total * 0.25) { threshold = i; break; }
+  }
+  let took = 0;
+  for (let i = threshold; i < s.tokenHist.length; i++) took += s.tokenHist[i];
+  return { took, threshold };
 }

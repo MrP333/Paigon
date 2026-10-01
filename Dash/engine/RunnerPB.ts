@@ -20,6 +20,10 @@ export interface PersonalBest {
   tokens: number;
   streak: number;
   contacts: number;
+  /** Closing band (60-90s) — the stretch people actually want to beat. */
+  closing: number;
+  /** Dead-end trails squeezed, as a percentage. */
+  greedPct: number;
   reactionMs: number | null;
   /** The run itself, as [step, direction] pairs. Replayed for the ghost. */
   trace: [number, number][];
@@ -36,6 +40,27 @@ export function loadPB(code: string): PersonalBest | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * What this run beat, if anything.
+ *
+ * Tokens is the only one that replaces the stored best — the others are
+ * targets to chase on the same course, and a run that improved its closing
+ * band while scoring fewer tokens is still worth telling the player about.
+ */
+export interface Beaten { tokens: boolean; closing: boolean; greed: boolean; }
+
+export function compare(prev: PersonalBest | null, run: PersonalBest): Beaten {
+  if (!prev) return { tokens: true, closing: true, greed: true };
+  return {
+    tokens: run.tokens > prev.tokens,
+    closing: run.closing > prev.closing,
+    // "with tokens allowed to stay flat" — greed counts as beaten even if the
+    // score did not move, because squeezing more from the same course is the
+    // thing being measured.
+    greed: run.greedPct > prev.greedPct,
+  };
 }
 
 /** Returns true when this run beat the stored best. */
