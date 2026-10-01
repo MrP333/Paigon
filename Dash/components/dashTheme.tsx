@@ -49,6 +49,21 @@ export const dashVis = {
   z: 0,
   distance: 0,
   laneX: 0,
+  /**
+   * Lateral offset of the course at a given depth.
+   *
+   * The pack was authored against a straight preview course, so every piece of
+   * scenery was pinned to absolute x — walls at +/-7.15, shoulders, streaks,
+   * motes. The real course sways: its centreline swings roughly -18 to +18.5
+   * units, while the lanes only span centre +/-4.8. The player therefore drove
+   * straight through the canyon walls on every bend.
+   *
+   * Each element samples this at ITS OWN z rather than the player's. Offsetting
+   * the whole scenery by one value would be wrong by up to ~4.7 units for the
+   * walls, which sit 24 units ahead — more than the 2.35 units of clearance
+   * they have.
+   */
+  centerAt: ((z: number) => 0) as (z: number) => number,
   streak: 0,
   /** 0..1 peripheral heat. Theme owns the decay. */
   heat: 0,
@@ -73,6 +88,7 @@ export function pushRunState(s: {
   speed: number;
   z: number;
   laneX: number;
+  centerAt?: (z: number) => number;
   streak: number;
   threat?: number;
 }) {
@@ -80,6 +96,7 @@ export function pushRunState(s: {
   dashVis.z = s.z;
   dashVis.distance = s.z;
   dashVis.laneX = s.laneX;
+  if (s.centerAt) dashVis.centerAt = s.centerAt;
   dashVis.streak = s.streak;
   dashVis.threat = s.threat ?? 0;
 }
@@ -600,10 +617,11 @@ export function DashScenery() {
     decay(dt);
     paintScroll(t);
     const z = dashVis.z;
-    if (sky.current) sky.current.position.set(0, 0, z);
-    if (deck.current) deck.current.position.set(0, 0, z + 28);
-    if (wallL.current) wallL.current.position.set(-7.15, 2.7, z + 24);
-    if (wallR.current) wallR.current.position.set(7.15, 2.7, z + 24);
+    const c = dashVis.centerAt;
+    if (sky.current) sky.current.position.set(c(z), 0, z);
+    if (deck.current) deck.current.position.set(c(z + 28), 0, z + 28);
+    if (wallL.current) wallL.current.position.set(c(z + 24) - 7.15, 2.7, z + 24);
+    if (wallR.current) wallR.current.position.set(c(z + 24) + 7.15, 2.7, z + 24);
 
     const high = dashVis.quality === 1;
     const sc = high ? 36 : 12;
@@ -623,8 +641,9 @@ export function DashScenery() {
         sz[i] -= dt * dashVis.speed * (1.15 + (i % 5) * 0.08);
         if (sz[i] < -12) sz[i] = 70 + (i % 7) * 4;
         const side = i % 2 === 0 ? -1 : 1;
-        const x = side * (6.15 + (i % 4) * 0.45);
-        _dummy.position.set(x, 1.1 + (i % 3) * 0.7, z + sz[i]);
+        const sZ = z + sz[i];
+        const x = c(sZ) + side * (6.15 + (i % 4) * 0.45);
+        _dummy.position.set(x, 1.1 + (i % 3) * 0.7, sZ);
         _dummy.scale.set(1, 0.7 + speedNorm(), 1);
         _dummy.rotation.set(0, 0, 0);
         _dummy.updateMatrix();
@@ -639,7 +658,8 @@ export function DashScenery() {
         mz[i] += dt * dashVis.speed * 0.45;
         if (mz[i] > 96) mz[i] -= 100;
         const side = i % 2 === 0 ? -1 : 1;
-        _dummy.position.set(side * (6.4 + (i % 5) * 0.7), 2.2 + (i % 4) * 0.8, z + mz[i] - 10);
+        const mZ = z + mz[i] - 10;
+        _dummy.position.set(c(mZ) + side * (6.4 + (i % 5) * 0.7), 2.2 + (i % 4) * 0.8, mZ);
         _dummy.scale.setScalar(1);
         _dummy.rotation.set(0, 0, 0);
         _dummy.updateMatrix();
@@ -655,7 +675,8 @@ export function DashScenery() {
       mesh.count = n;
       for (let i = 0; i < n; i++) {
         const tall = i % 4 === 0 ? 3.3 : 1.55;
-        _dummy.position.set(x, tall * 0.5, base + i * 8);
+        const pZ = base + i * 8;
+        _dummy.position.set(c(pZ) + x, tall * 0.5, pZ);
         _dummy.scale.set(1, tall, 1);
         _dummy.rotation.set(0, 0, 0);
         _dummy.updateMatrix();

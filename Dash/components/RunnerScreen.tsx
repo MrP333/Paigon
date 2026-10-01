@@ -7,7 +7,7 @@
  */
 import { useRef, useState, useEffect, useMemo } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { Vector3, Color } from 'three';
+import { Vector3, Color, OctahedronGeometry, BoxGeometry } from 'three';
 import type { MeshStandardMaterial as THREE_Mat } from 'three';
 import type { Socket } from 'socket.io-client';
 import { loadPB, savePB, compare, PersonalBest, Beaten } from '../engine/RunnerPB';
@@ -36,6 +36,20 @@ const VIEW_BEHIND = 25;
  * a short segment of line at a time.
  */
 const LIVE_LEAD = 34;
+
+/**
+ * Geometry is shared, not declared inline.
+ *
+ * <octahedronGeometry> inside a map builds a NEW geometry for every token, and
+ * rebuilds all of them whenever the view window advances — roughly 34
+ * allocations and disposals twice a second at racing speed, which is a
+ * reconciliation spike you can feel. Three shapes cover everything drawn here.
+ */
+const GEO = {
+  token: new OctahedronGeometry(0.5),
+  doomed: new OctahedronGeometry(0.46),
+  hazard: new BoxGeometry(LANE_W * 0.92, 2, 0.7),
+};
 
 /**
  * Which way lane index runs on screen.
@@ -112,7 +126,13 @@ function TokenLine({ course, tokens, zRef }: {
    * Only ~34 tokens are ever on screen (VIEW_AHEAD / TOKEN_SPACING), so 48 is
    * headroom rather than a limit.
    */
-  const POOL = 48;
+  /**
+   * Derived, not guessed: the window is VIEW_AHEAD plus one BUCKET of overhang
+   * plus the 6 units kept behind, divided by token spacing — 44 worst case.
+   * Rounded up with headroom so widening the view or the bucket cannot
+   * silently start recycling a material that is still on screen.
+   */
+  const POOL = 64;
   const pool = useMemo(() => ({
     safe: Array.from({ length: POOL }, () => getTokenMaterial().clone()),
     doomed: Array.from({ length: POOL }, () => getDoomedMaterial().clone()),
@@ -142,11 +162,10 @@ function TokenLine({ course, tokens, zRef }: {
           <mesh
             key={`${t.z}-${t.lane}`}
             position={[laneX(course, t.lane, t.z), 0.8, t.z]}
+            geometry={t.doomed ? GEO.doomed : GEO.token}
             material={(t.doomed ? pool.doomed : pool.safe)[i % POOL]}
             ref={() => { mats.current[i] = (t.doomed ? pool.doomed : pool.safe)[i % POOL]; }}
-          >
-            <octahedronGeometry args={[t.doomed ? 0.46 : 0.5]} />
-          </mesh>
+          />
         );
       })}
     </>
@@ -159,7 +178,10 @@ function Hazards({ course, zRef }: { course: RunCourse; zRef: React.MutableRefOb
   // Re-render only when the visible window actually moves on, not every frame:
   // rebuilding this subtree at 60Hz drops the framerate far enough to change
   // how the game feels, which would defeat the point of a playtest build.
-  const BUCKET = 20;
+  // Wider bucket, fewer reconciliations. The lit window is driven per frame
+  // through material refs, so this only controls which objects are MOUNTED —
+  // raising it costs a few more off-screen draws and halves the spikes.
+  const BUCKET = 40;
   const [bucket, setBucket] = useState(0);
   useFrame(() => {
     const b = Math.floor(zRef.current / BUCKET);
@@ -177,9 +199,12 @@ function Hazards({ course, zRef }: { course: RunCourse; zRef: React.MutableRefOb
           {/* One shared hazard material, never cloned per box: these are drawn
               in bulk every frame and per-box materials would hitch. */}
           {r.blocked.map(l => (
-            <mesh key={l} position={[laneX(course, l, r.z), 1, r.z]} material={getHazardMaterial()}>
-              <boxGeometry args={[LANE_W * 0.92, 2, 0.7]} />
-            </mesh>
+            <mesh
+              key={l}
+              position={[laneX(course, l, r.z), 1, r.z]}
+              geometry={GEO.hazard}
+              material={getHazardMaterial()}
+            />
           ))}
         </group>
       ))}
@@ -295,6 +320,8 @@ const REPORT_EVERY_STEPS = 60;
 
 function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud, socket, ghost, onTrace }: LoopProps) {
   const { camera } = useThree();
+  // Stable across frames so the pack is not handed a new closure every tick.
+  const centerFn = useMemo(() => (z: number) => trackCenter(course, z), [course]);
   const acc = useRef(0);
   /** Wall clock of sim step 0, so a step index can be converted to a time. */
   const t0 = useRef(0);
@@ -373,6 +400,9 @@ function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud, socket, ghost, o
       z: s.z,
       laneX: playerX(course, s),
       streak: s.streak,
+      // The pack pins its scenery to absolute x; this course sways by up to
+      // 18 units, so without it the player drives through the canyon walls.
+      centerAt: centerFn,
     });
 
     const px = playerX(course, s);
