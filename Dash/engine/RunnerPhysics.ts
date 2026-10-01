@@ -73,6 +73,16 @@ export interface RunnerState {
    */
   streak: number;
   bestStreak: number;
+  /**
+   * Tokens at the end of each band: 0-25s, 25-60s, 60-90s. The money score is
+   * their sum — these exist so the result can show the shape of a run, and so
+   * the published tiebreak (token count at 60s) is derivable rather than
+   * asserted. All three come out of the replay, so the server computes the
+   * same numbers from the same trace.
+   */
+  bands: [number, number, number];
+  /** Step index of the most recent token. Final tiebreak. */
+  lastTokenStep: number;
   /** Steps between a row becoming current and the first input after it. */
   reactionSamples: number[];
   pendingRowStep: number;
@@ -90,7 +100,8 @@ export function initialState(): RunnerState {
     lanePos: mid, laneTarget: mid,
     immuneS: 0, cleanS: 0, bestCleanS: 0,
     tokens: 0, tokensSeen: 0,
-    streak: 0, bestStreak: 0, reactionSamples: [], pendingRowStep: -1, stepNo: 0,
+    streak: 0, bestStreak: 0, bands: [0, 0, 0], lastTokenStep: -1,
+    reactionSamples: [], pendingRowStep: -1, stepNo: 0,
     elapsedS: 0, shards: 0, crashes: 0,
     rowCursor: 0, shardCursor: 0,
     finished: false,
@@ -120,7 +131,12 @@ export function step(
   }
 
   // ── Steering ──
-  if (input.steer !== 0) {
+  // A lane change is a commitment: once a move is in flight, further input is
+  // ignored until it lands. Without this you can retarget halfway across and
+  // a lane change stops costing anything, which is what makes the 0.18s a
+  // real price rather than a visual.
+  const moveInFlight = s.lanePos !== s.laneTarget;
+  if (input.steer !== 0 && !moveInFlight) {
     const want = Math.round(s.laneTarget) + input.steer;
     if (want >= 0 && want <= LANES - 1) s.laneTarget = want;
   }
@@ -147,6 +163,8 @@ export function step(
       // and taking the token are the same act of precision.
       if (Math.abs(s.lanePos - tk.lane) * LANE_W < HIT_DIST) {
         s.tokens++; ev.picked++;
+        s.lastTokenStep = s.stepNo;
+        s.bands[s.elapsedS < 25 ? 0 : s.elapsedS < 60 ? 1 : 2]++;
         s.streak++;
         if (s.streak > s.bestStreak) s.bestStreak = s.streak;
       }
