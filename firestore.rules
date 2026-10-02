@@ -22,14 +22,17 @@ service cloud.firestore {
       allow create: if isOwner(uid)
                     && !('balanceCents' in request.resource.data)
                     && !('isDev'        in request.resource.data)
-                    && !('points'       in request.resource.data);
+                    && !('points'       in request.resource.data)
+                    && !('lastWithdrawalAt' in request.resource.data);
 
-      // Updates: balanceCents/isDev/points are server-only (Railway Admin SDK bypasses rules)
+      // Updates: balanceCents/isDev/points/lastWithdrawalAt are server-only
+      // (Railway Admin SDK bypasses rules). lastWithdrawalAt backs the 12-hour
+      // withdrawal cooldown — client-writable would make the cooldown pointless.
       // Admin emails can touch any field for testing
       allow update: if isOwner(uid)
                     && (
                       !request.resource.data.diff(resource.data)
-                        .affectedKeys().hasAny(['balanceCents', 'isDev', 'points'])
+                        .affectedKeys().hasAny(['balanceCents', 'isDev', 'points', 'lastWithdrawalAt'])
                       || isAdminEmail()
                     );
 
