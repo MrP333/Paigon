@@ -1,11 +1,22 @@
 import { useState, useEffect, useRef } from 'react';
 
-type StepId = 'w' | 'space' | 'steer';
+/**
+ * The gate must test the controls the game actually has, and only those.
+ *
+ * It used to check W for "move forward" and Space for "jump". Neither exists:
+ * speed is earned automatically and there is no jump. So a player whose
+ * keyboard could not produce W or Space was blocked from a game that never
+ * reads them — and a player who passed learned two controls that do nothing.
+ *
+ * Changing lane left and right are separate steps on purpose. They are the
+ * entire control scheme, so a stuck key or an unmapped side is worth catching
+ * before someone finds out mid-race with money on it.
+ */
+type StepId = 'left' | 'right';
 
 const STEPS: { id: StepId; label: string; instruction: string }[] = [
-  { id: 'w',     label: 'Movement', instruction: 'Press W or Up to move forward' },
-  { id: 'space', label: 'Jump',     instruction: 'Press Space to jump'            },
-  { id: 'steer', label: 'Steering', instruction: 'Press A or D to steer'          },
+  { id: 'left',  label: 'Move left',  instruction: 'Press A or the Left arrow'  },
+  { id: 'right', label: 'Move right', instruction: 'Press D or the Right arrow' },
 ];
 
 const RAINBOW = 'linear-gradient(135deg,#ff0080,#ff6600,#ffd700,#00ff88,#00ccff,#8844ff,#ff0080)';
@@ -97,29 +108,16 @@ export default function CalibrationGate({ onComplete }: { onComplete: () => void
 
     const step = STEPS[stepIdx].id;
 
-    if (step === 'w') {
-      const fn = (e: KeyboardEvent) => {
-        if (e.code === 'KeyW' || e.code === 'ArrowUp') advanceRef.current();
-      };
-      window.addEventListener('keydown', fn);
-      return () => { window.removeEventListener('keydown', fn); clearNudge(); };
-    }
-
-    if (step === 'space') {
-      const fn = (e: KeyboardEvent) => {
-        if (e.code === 'Space') { e.preventDefault(); advanceRef.current(); }
-      };
-      window.addEventListener('keydown', fn);
-      return () => { window.removeEventListener('keydown', fn); clearNudge(); };
-    }
-
-    if (step === 'steer') {
-      const fn = (e: KeyboardEvent) => {
-        if (['KeyA', 'KeyD', 'ArrowLeft', 'ArrowRight'].includes(e.code)) advanceRef.current();
-      };
-      window.addEventListener('keydown', fn);
-      return () => { window.removeEventListener('keydown', fn); clearNudge(); };
-    }
+    // Each side is checked on its own, so passing means both actually work.
+    const WANT: Record<StepId, string[]> = {
+      left:  ['KeyA', 'ArrowLeft'],
+      right: ['KeyD', 'ArrowRight'],
+    };
+    const fn = (e: KeyboardEvent) => {
+      if (WANT[step].includes(e.code)) advanceRef.current();
+    };
+    window.addEventListener('keydown', fn);
+    return () => { window.removeEventListener('keydown', fn); clearNudge(); };
 
     return () => clearNudge();
   }, [stepIdx]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -207,10 +205,7 @@ export default function CalibrationGate({ onComplete }: { onComplete: () => void
                     </svg>
                   </div>
                 ) : isActive ? (
-                  <KeyCap
-                    label={step.id === 'w' ? 'W' : step.id === 'space' ? 'SPACE' : 'A / D'}
-                    wide={step.id !== 'w'}
-                  />
+                  <KeyCap label={step.id === 'left' ? 'A' : 'D'} wide={false} />
                 ) : (
                   <div style={{ width: 34, height: 34, borderRadius: '50%', border: '1.5px solid rgba(255,255,255,0.13)', flexShrink: 0 }} />
                 )}

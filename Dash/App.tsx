@@ -20,7 +20,7 @@ const SOLO_DAILY_LIMIT = 5;
 
 export default function App() {
   const [calibrated, setCalibrated] = useState(
-    () => sessionStorage.getItem('dashCalibrationPassed') === 'true',
+    () => sessionStorage.getItem('dashCalibrationPassed.v2') === 'true',
   );
   const [screen, setScreen] = useState<'home' | 'waiting' | 'game' | 'result'>('home');
   const [notice, setNotice] = useState<NoticeData | null>(null);
@@ -222,7 +222,7 @@ export default function App() {
   if (!calibrated) {
     return (
       <CalibrationGate onComplete={() => {
-        sessionStorage.setItem('dashCalibrationPassed', 'true');
+        sessionStorage.setItem('dashCalibrationPassed.v2', 'true');
         setCalibrated(true);
       }} />
     );

@@ -985,7 +985,9 @@ export function PlayerRig() {
 
   return (
     <group>
-      <mesh ref={orb} geometry={t.orbGeo} material={t.orbMat} />
+      {/* Positioned every frame from dashVis, like the trail beside it, so it
+          is exempted from culling for the same reason. */}
+      <mesh ref={orb} geometry={t.orbGeo} material={t.orbMat} frustumCulled={false} />
       <instancedMesh ref={trail} args={[t.trailGeo, t.trailMat, TRAIL_N]} frustumCulled={false} />
       <mesh ref={ring} geometry={t.ringGeo} material={t.ringMat} visible={false} />
     </group>

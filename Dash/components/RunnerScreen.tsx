@@ -66,34 +66,6 @@ const GEO = {
  */
 const STEER_SCREEN_LEFT: -1 | 1 = 1;
 
-// ── Track ─────────────────────────────────────────────────────────────────────
-
-function Track({ course, zRef }: { course: RunCourse; zRef: React.MutableRefObject<number> }) {
-  const SLAB = 10;
-  const group = useRef<any>(null);
-  const count = Math.ceil((VIEW_AHEAD + VIEW_BEHIND) / SLAB);
-
-  useFrame(() => {
-    if (!group.current) return;
-    const z0 = Math.floor((zRef.current - VIEW_BEHIND) / SLAB) * SLAB;
-    group.current.children.forEach((m: any, i: number) => {
-      const z = z0 + i * SLAB;
-      m.position.set(trackCenter(course, z), -0.35, z);
-    });
-  });
-
-  return (
-    <group ref={group}>
-      {Array.from({ length: count }, (_, i) => (
-        <mesh key={i} receiveShadow>
-          <boxGeometry args={[LANES * LANE_W + 1.2, 0.3, SLAB]} />
-          <meshStandardMaterial color={i % 2 ? '#26262e' : '#202027'} roughness={0.9} />
-        </mesh>
-      ))}
-    </group>
-  );
-}
-
 /**
  * The token line.
  *
@@ -427,7 +399,11 @@ function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud, socket, ghost, o
     pushRunState({
       speed: s.speed,
       z: s.z,
-      laneX: playerX(course, s),
+      // OFFSET from the centreline, not world x. The pack computes
+      // worldX() = centerAt(z) + laneX, so passing an absolute position
+      // applied the sway twice and put the orb up to 18 units off screen in a
+      // bend — which is why it vanished only on some stretches.
+      laneX: (s.lanePos - (LANES - 1) / 2) * LANE_W,
       streak: s.streak,
     });
 
@@ -596,7 +572,6 @@ export default function RunnerScreen({
         <fog attach="fog" args={['#0a0a0f', 60, 170]} />
         <DashScenery />
         <ActGate />
-        <Track course={course} zRef={zRef} />
         <Hazards course={course} zRef={zRef} />
         <PlayerRig />
         <RewardLayer />

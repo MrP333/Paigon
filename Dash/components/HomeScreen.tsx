@@ -46,10 +46,13 @@ const TIERS = [
   { id: 'elite',    label: '500 PC',  entryCents: 5000, desc: '2% rake',            col: '#ff0080', glow: 'rgba(255,0,128,.4)',   bg: 'rgba(255,0,128,.1)'  },
 ];
 
+// The whole control scheme. W and SPACE used to be listed here for a game
+// that no longer exists — speed is earned by riding clean, and there is no
+// jump. Promising controls the game does not read is worse than listing none.
 const CONTROL_ROWS = [
-  { key: 'W / ↑',     col: '#00ff88', desc: 'Move forward along the course' },
-  { key: 'A/D / ← →', col: '#ffd700', desc: 'Strafe left/right — dodge obstacles and stay on the track' },
-  { key: 'SPACE',     col: '#22d3ee', desc: 'Jump — leap over beams and gaps' },
+  { key: 'A / ←', col: '#00e7ff', desc: 'Move one lane left' },
+  { key: 'D / →', col: '#00e7ff', desc: 'Move one lane right' },
+  { key: '—',     col: '#ffd56a', desc: 'Speed builds while you ride clean and drops on contact. Collect the token line.' },
 ];
 
 function getRank(pts: number) {
