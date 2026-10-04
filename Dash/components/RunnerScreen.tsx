@@ -11,6 +11,7 @@ import { Vector3, Color, OctahedronGeometry, BoxGeometry } from 'three';
 import type { MeshStandardMaterial as THREE_Mat } from 'three';
 import type { Socket } from 'socket.io-client';
 import { loadPB, savePB, compare, PersonalBest, Beaten } from '../engine/RunnerPB';
+import DashActors from './DashActors';
 import {
   pushRunState, noteToken, noteContact, noteFinish, setDashQuality, setCenterAt,
   dashVis, ActGate,
@@ -28,169 +29,17 @@ import {
   estimateReaction, ceilingTokens,
 } from '../engine/RunnerPhysics';
 
-const VIEW_AHEAD  = 130;
-const VIEW_BEHIND = 25;
-
-/**
- * How far ahead the token line reads as "live". Shorter than VIEW_AHEAD on
- * purpose: the player should see the whole course to plan, but only commit to
- * a short segment of line at a time.
- */
-const LIVE_LEAD = 34;
-
-/**
- * Geometry is shared, not declared inline.
- *
- * <octahedronGeometry> inside a map builds a NEW geometry for every token, and
- * rebuilds all of them whenever the view window advances — roughly 34
- * allocations and disposals twice a second at racing speed, which is a
- * reconciliation spike you can feel. Three shapes cover everything drawn here.
- */
-const GEO = {
-  token: new OctahedronGeometry(0.5),
-  doomed: new OctahedronGeometry(0.46),
-  hazard: new BoxGeometry(LANE_W * 0.92, 2, 0.7),
-};
-
 /**
  * Which way lane index runs on screen.
  *
  * The chase camera looks along +z, which flips the world x axis across the
- * view: +x lands on the LEFT of the screen. Lane index rises with x (see
- * laneX), so lane 2 is screen-left and lane 0 is screen-right, and mapping A to
- * a decreasing lane index walked the player right.
- *
- * Corrected here rather than by negating laneX, because which side a lane
- * appears on is a fact about where the camera sits, not about the course —
- * GameScreen.tsx resolves the same flip the same way, with KeyA adding to x.
+ * view: +x lands on the LEFT of the screen. Lane index rises with x, so
+ * mapping A to a decreasing lane index walked the player right.
  */
 const STEER_SCREEN_LEFT: -1 | 1 = 1;
 
-/**
- * The token line.
- *
- * Only the stretch inside LIVE_LEAD is lit; beyond it the line is dim, so the
- * eye tracks a short live segment rather than a long gold carpet. A trail that
- * dead-ends into a blocked lane burns amber from the moment it enters view,
- * which turns the one-in-three betrayal into a beat the player can learn
- * instead of a trap they have to memorise per seed.
- *
- * Lighting is mutated per frame through material refs rather than by
- * re-rendering. Which tokens are MOUNTED changes only every 20 units, so
- * driving the glow off React state would make it step in 20-unit jumps —
- * which is the exact artefact this is supposed to remove.
- */
-function TokenLine({ course, tokens, zRef }: {
-  course: RunCourse;
-  tokens: { z: number; lane: number; doomed?: boolean }[];
-  zRef: React.MutableRefObject<number>;
-}) {
-  /**
-   * A bounded pool, cloned once from the pack's materials.
-   *
-   * The pack asks for one shared material per kind, which is right for
-   * hazards — they are drawn in bulk. It cannot work for tokens, because the
-   * live window lights each one by its distance ahead, and a shared material
-   * would mean the last token written wins. Cloning per render would leak a
-   * material every time the view bucket advances, so the pool is fixed and
-   * indexed instead: colour and emissive still come from the pack, the count
-   * is capped, and nothing is allocated per frame.
-   *
-   * Only ~34 tokens are ever on screen (VIEW_AHEAD / TOKEN_SPACING), so 48 is
-   * headroom rather than a limit.
-   */
-  /**
-   * Derived, not guessed: the window is VIEW_AHEAD plus one BUCKET of overhang
-   * plus the 6 units kept behind, divided by token spacing — 44 worst case.
-   * Rounded up with headroom so widening the view or the bucket cannot
-   * silently start recycling a material that is still on screen.
-   */
-  const POOL = 64;
-  const pool = useMemo(() => ({
-    safe: Array.from({ length: POOL }, () => getTokenMaterial().clone()),
-    doomed: Array.from({ length: POOL }, () => getDoomedMaterial().clone()),
-  }), []);
-  const mats = useRef<(THREE_Mat | null)[]>([]);
 
-  useFrame(({ clock }) => {
-    const zNow = zRef.current;
-    const pulse = 0.72 + 0.28 * Math.sin(clock.elapsedTime * 5.2);
-    for (let i = 0; i < tokens.length; i++) {
-      const m = mats.current[i];
-      if (!m) continue;
-      const ahead = tokens[i].z - zNow;
-      const live = ahead > -2 && ahead < LIVE_LEAD;
-      if (!live) { m.emissiveIntensity = 0.16; m.opacity = 0.3; continue; }
-      // Doomed trails pulse, so the warning reads as urgency rather than as
-      // just another colour the player has to have been told about.
-      m.emissiveIntensity = tokens[i].doomed ? 2.0 * pulse : 1.15;
-      m.opacity = 1;
-    }
-  });
 
-  return (
-    <>
-      {tokens.map((t, i) => {
-        return (
-          <mesh
-            key={`${t.z}-${t.lane}`}
-            position={[laneX(course, t.lane, t.z), 0.8, t.z]}
-            geometry={t.doomed ? GEO.doomed : GEO.token}
-            material={(t.doomed ? pool.doomed : pool.safe)[i % POOL]}
-            ref={() => { mats.current[i] = (t.doomed ? pool.doomed : pool.safe)[i % POOL]; }}
-          />
-        );
-      })}
-    </>
-  );
-}
-
-// ── Hazards and shards, windowed around the player ────────────────────────────
-
-function Hazards({ course, zRef }: { course: RunCourse; zRef: React.MutableRefObject<number> }) {
-  // Re-render only when the visible window actually moves on, not every frame:
-  // rebuilding this subtree at 60Hz drops the framerate far enough to change
-  // how the game feels, which would defeat the point of a playtest build.
-  // Wider bucket, fewer reconciliations. The lit window is driven per frame
-  // through material refs, so this only controls which objects are MOUNTED —
-  // raising it costs a few more off-screen draws and halves the spikes.
-  const BUCKET = 40;
-  const [bucket, setBucket] = useState(0);
-  useFrame(() => {
-    const b = Math.floor(zRef.current / BUCKET);
-    if (b !== bucket) setBucket(b);
-  });
-
-  const z = bucket * BUCKET;
-  const rows = course.rows.filter(r => r.z > z - 6 && r.z < z + VIEW_AHEAD);
-  const tokens = course.tokens.filter((t: {z:number;lane:number}) => t.z > z - 6 && t.z < z + VIEW_AHEAD);
-
-  return (
-    <>
-      {rows.map(r => (
-        <group key={r.z}>
-          {/* One shared hazard material, never cloned per box: these are drawn
-              in bulk every frame and per-box materials would hitch. */}
-          {r.blocked.map(l => (
-            <mesh
-              key={l}
-              position={[laneX(course, l, r.z), 1, r.z]}
-              geometry={GEO.hazard}
-              material={getHazardMaterial()}
-            />
-          ))}
-        </group>
-      ))}
-      {/* The line is a read, not a ribbon to vacuum.
-          Only the stretch inside LIVE_LEAD is lit; past that it is dim, so the
-          eye tracks a short live segment instead of a long gold carpet. A
-          trail that dead-ends into a blocked lane is amber from the moment it
-          enters view, which turns the one-in-three betrayal into a beat the
-          player can learn rather than a trap they memorise per seed. */}
-      <TokenLine course={course} tokens={tokens} zRef={zRef} />
-    </>
-  );
-}
 
 // ── Opponents ─────────────────────────────────────────────────────────────────
 
@@ -572,7 +421,7 @@ export default function RunnerScreen({
         <fog attach="fog" args={['#0a0a0f', 60, 170]} />
         <DashScenery />
         <ActGate />
-        <Hazards course={course} zRef={zRef} />
+        <DashActors course={course} zRef={zRef} />
         <PlayerRig />
         <RewardLayer />
         <GhostRider course={course} ghost={ghostRun} />
