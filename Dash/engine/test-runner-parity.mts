@@ -22,6 +22,29 @@ for (const code of ['ROOM1','7FYXG','TDN64','SOLO_PRACTICE','zz','A']) {
 }
 console.log(`course generation: ${bad===0?'identical across 6 codes':'MISMATCH'}  (rows/tokens/sway/closures)`);
 
+// 1b ── the middle lane must NEVER close, and parity cannot see this.
+//
+// Parity only proves TS and CJS agree. If a change let the middle lane close on
+// both sides they would agree perfectly and every other check would still pass,
+// while the track silently split into two corridors that cannot reach each other
+// — crossing a shut lane is itself contact, and rowIsFair only checks whether a
+// lane change fits in the time, never whether the path crosses something closed.
+// That is the single most important invariant of the feature, so it is asserted
+// rather than left to a comment.
+{
+  const MID = (TS_C.LANES - 1) / 2;
+  let offenders = 0, seen = 0;
+  for (let i = 0; i < 400; i++) {
+    for (const c of (TS_C.generateRun('INV' + i) as any).closures) {
+      seen++;
+      if (c.lane !== 0 && c.lane !== TS_C.LANES - 1) offenders++;
+      if (c.z1 <= c.z0) offenders++;
+    }
+  }
+  if (offenders) { bad++; console.log(`FAIL ${offenders} closures on a middle lane or of zero length (mid=${MID})`); }
+  console.log(`closure invariant  : ${seen} closures, ${offenders === 0 ? 'all on outer lanes' : 'VIOLATED'}`);
+}
+
 // 2 ── replaying the same trace must give bit-identical state
 function makeTrace(seed:number, n:number) {
   const rng = mul(seed); const out: [number,number][] = [];
