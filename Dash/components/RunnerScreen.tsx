@@ -7,15 +7,13 @@
  */
 import { useRef, useState, useEffect, useMemo } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { Vector3, Color, OctahedronGeometry, BoxGeometry } from 'three';
-import type { MeshStandardMaterial as THREE_Mat } from 'three';
+import { Vector3, Color } from 'three';
 import type { Socket } from 'socket.io-client';
 import { loadPB, savePB, compare, PersonalBest, Beaten } from '../engine/RunnerPB';
 import DashActors from './DashActors';
 import {
   pushRunState, noteToken, noteContact, noteFinish, setDashQuality, setCenterAt,
-  dashVis, ActGate,
-  getHazardMaterial, getTokenMaterial, getDoomedMaterial,
+  dashVis, ActGate, GATE_Z,
   DashScenery, PlayerRig, RewardLayer,
 } from './dashTheme';
 import { unlockAudio, playToken, playContact, playFinish, playGate } from '../services/rewardAudio';
@@ -162,7 +160,7 @@ function Loop({ course, stateRef, inputRef, zRef, onEnd, onHud, socket, ghost, o
      * Fixed z, not time, so every player crosses at the same point of the same
      * course regardless of how fast they got there.
      */
-    dashVis.gates = [1100, 2300];
+    dashVis.gates = GATE_Z;
   }, [course]);
   const acc = useRef(0);
   /** Wall clock of sim step 0, so a step index can be converted to a time. */

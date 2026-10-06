@@ -46,8 +46,15 @@ export const DASH_COLORS = {
 
 export const STREAK_MARKS = [5, 10, 15, 20, 30, 40];
 
-/** Fixed course points. Replace with the real gate z list. Two gates, three acts. */
-export const GATE_Z = [620, 1280];
+/**
+ * Fixed course points where the act turns over. Two gates, three acts.
+ *
+ * THE single source of truth — RunnerScreen used to re-declare these inline,
+ * which left the first frames of a run rendering against stale values until its
+ * effect ran. Fixed z rather than time, so every player crosses at the same
+ * point of the same course no matter how fast they got there.
+ */
+export const GATE_Z = [1100, 2300];
 
 /**
  * Centreline sway. Sample at the object's own z.
@@ -641,6 +648,35 @@ function actSample(z: number) {
   const prev = act - 1;
   const t = Math.min(1, (z - gate) / 14);
   return { prev, act, t, u: prev + (act - prev) * t };
+}
+
+/**
+ * Roadblock tint per act, crossfaded across a gate.
+ *
+ * All three stay in the red-orange danger family on purpose. An act may change
+ * what the course feels like; it must never change what a colour MEANS. A
+ * roadblock that drifted toward the cyan of the scenery would be a fairness bug
+ * wearing art direction, because the player reads colour long before shape.
+ */
+const ACT_HAZARD = [
+  new THREE.Color('#ff2a6a'),
+  new THREE.Color('#ff5a1f'),
+  new THREE.Color('#ff1040'),
+];
+
+/** Tint for a row at its OWN z, not the player's — rows outlive the crossfade. */
+export function hazardTint(z: number, out: THREE.Color): THREE.Color {
+  const s = actSample(z);
+  return out.copy(ACT_HAZARD[s.prev]).lerp(ACT_HAZARD[s.act], s.t);
+}
+
+/**
+ * Which surface treatment a row wears. Snaps at the gate rather than blending,
+ * because the gate already flashes and a half-mixed pattern reads as a glitch.
+ * The silhouette is identical across all three — see DashActors.
+ */
+export function hazardStyle(z: number): number {
+  return actSample(z).act;
 }
 
 function watchGates() {

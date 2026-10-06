@@ -25,7 +25,7 @@ import { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { laneX, RunCourse, LANE_W } from '../engine/RunnerCourse';
-import { getTokenMaterial, getHazardMaterial } from './dashTheme';
+import { getTokenMaterial, getHazardMaterial, hazardTint, hazardStyle } from './dashTheme';
 
 /**
  * Pool sizes, derived rather than guessed. The widest window is VIEW_AHEAD
@@ -41,6 +41,13 @@ const VIEW_BEHIND = 6;
 /** How far ahead the token line reads as live. Beyond this it is dim. */
 const LIVE_LEAD = 34;
 
+/**
+ * Roadblock box dimensions. The shader needs them to normalise local position
+ * into face coordinates, so they live here rather than inline at the geometry.
+ */
+const HAZ_W = LANE_W * 0.92;
+const HAZ_H = 2;
+
 const GOLD = new THREE.Color('#ffd56a');
 const AMBER = new THREE.Color('#ffb020');
 
@@ -49,13 +56,14 @@ const _m = new THREE.Matrix4();
 const _p = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _s = new THREE.Vector3(1, 1, 1);
+const _c = new THREE.Color();
 
 /**
  * Adds the per-instance glow to a material without disturbing anything else
  * it does. `position` here is the gem's own vertex, geometry-local — the
  * instance transform lives in instanceMatrix and must not be read from it.
  */
-function installGlow(mat: THREE.Material): void {
+export function installGlow(mat: THREE.Material): void {
   mat.onBeforeCompile = (shader) => {
     shader.vertexShader =
       'attribute vec3 aGlow;\nattribute float aLit;\nvarying vec3 vGlow;\nvarying float vLit;\n' +
@@ -68,6 +76,54 @@ function installGlow(mat: THREE.Material): void {
       shader.fragmentShader.replace(
         '#include <emissivemap_fragment>',
         '#include <emissivemap_fragment>\ntotalEmissiveRadiance = vGlow * vLit;',
+      );
+  };
+  mat.needsUpdate = true;
+}
+
+/**
+ * The roadblock equivalent, with a surface treatment per act on top of the
+ * per-instance colour.
+ *
+ * THE RULE THIS SHADER OBEYS: the lit area always covers the whole face. The
+ * acts change the TEXTURE of a roadblock, never its apparent footprint. There
+ * is no jump and no duck in this game, so every roadblock blocks absolutely —
+ * a pattern that left a dark gap would read as a way through and punish the
+ * player for believing their own eyes. Hence the 0.45 floor on every stripe:
+ * the dim band is shading, never a hole.
+ */
+export function installHazardSkin(mat: THREE.Material): void {
+  mat.onBeforeCompile = (shader) => {
+    shader.vertexShader =
+      'attribute vec3 aGlow;\nattribute float aStyle;\n' +
+      'varying vec3 vGlow;\nvarying float vStyle;\nvarying vec2 vSkin;\n' +
+      shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        // Face coordinates come from the box's own local position, NOT from uv:
+        // this material has no maps, so three never defines USE_UV and the uv
+        // attribute is simply not declared. Reading it would fail to compile at
+        // runtime, which no build step would have caught.
+        '#include <begin_vertex>\nvGlow = aGlow;\nvStyle = aStyle;\n' +
+          'vSkin = vec2(position.x / ' + HAZ_W.toFixed(5) + ' + 0.5, position.y / ' +
+          HAZ_H.toFixed(5) + ' + 0.5);',
+      );
+    shader.fragmentShader =
+      'varying vec3 vGlow;\nvarying float vStyle;\nvarying vec2 vSkin;\n' +
+      shader.fragmentShader.replace(
+        '#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+        // Act 0 solid with a hot rim, act 1 diagonal chevrons, act 2 scan bars.
+        float band = 1.0;
+        if (vStyle < 0.5) {
+          float edge = min(min(vSkin.x, 1.0 - vSkin.x), min(vSkin.y, 1.0 - vSkin.y));
+          band = mix(1.0, 0.62, smoothstep(0.0, 0.18, edge));
+        } else if (vStyle < 1.5) {
+          band = step(0.5, fract((vSkin.x + vSkin.y) * 3.0));
+        } else {
+          band = step(0.5, fract(vSkin.y * 4.0));
+        }
+        // Never below 0.45 — a roadblock must read as closed everywhere.
+        totalEmissiveRadiance = vGlow * mix(0.45, 1.0, band) * 1.9;`,
       );
   };
   mat.needsUpdate = true;
@@ -95,10 +151,24 @@ export default function DashActors({ course, zRef }: {
     const tokenMat = getTokenMaterial().clone();
     installGlow(tokenMat);
 
+    // Roadblocks carry a colour and an act style. Same silhouette for all.
+    const hGlow = new Float32Array(MAX_HAZARDS * 3);
+    const hStyle = new Float32Array(MAX_HAZARDS);
+    const hGlowAttr = new THREE.InstancedBufferAttribute(hGlow, 3);
+    const hStyleAttr = new THREE.InstancedBufferAttribute(hStyle, 1);
+    hGlowAttr.setUsage(THREE.DynamicDrawUsage);
+    hStyleAttr.setUsage(THREE.DynamicDrawUsage);
+
+    const hazardGeo = new THREE.BoxGeometry(HAZ_W, HAZ_H, 0.7);
+    hazardGeo.setAttribute('aGlow', hGlowAttr);
+    hazardGeo.setAttribute('aStyle', hStyleAttr);
+
+    const hazardMat = getHazardMaterial().clone();
+    installHazardSkin(hazardMat);
+
     return {
       tokenGeo, tokenMat, glow, lit, glowAttr, litAttr,
-      hazardGeo: new THREE.BoxGeometry(LANE_W * 0.92, 2, 0.7),
-      hazardMat: getHazardMaterial(),
+      hazardGeo, hazardMat, hGlow, hStyle, hGlowAttr, hStyleAttr,
     };
   }, []);
 
@@ -141,16 +211,26 @@ export default function DashActors({ course, zRef }: {
     for (const row of course.rows) {
       if (row.z < lo) continue;
       if (row.z > hi) break;
+      // Act tint read at the ROW's z, so a roadblock keeps the look of the act
+      // it stands in rather than flickering to match wherever the player is.
+      hazardTint(row.z, _c);
+      const style = hazardStyle(row.z);
       for (const lane of row.blocked) {
         if (h >= MAX_HAZARDS) break;
         _p.set(laneX(course, lane, row.z), 1, row.z);
         _m.compose(_p, _q, _s);
         hm.setMatrixAt(h, _m);
+        kit.hGlow[h * 3] = _c.r;
+        kit.hGlow[h * 3 + 1] = _c.g;
+        kit.hGlow[h * 3 + 2] = _c.b;
+        kit.hStyle[h] = style;
         h++;
       }
     }
     hm.count = h;
     hm.instanceMatrix.needsUpdate = true;
+    kit.hGlowAttr.needsUpdate = true;
+    kit.hStyleAttr.needsUpdate = true;
   });
 
   return (
