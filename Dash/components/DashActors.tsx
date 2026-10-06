@@ -35,6 +35,15 @@ import { getTokenMaterial, getHazardMaterial, hazardTint, hazardStyle } from './
  */
 const MAX_TOKENS = 64;
 const MAX_HAZARDS = 24;
+/**
+ * A closure is drawn as a run of short segments rather than one long box,
+ * because the lane follows the swaying centreline and a single stretched box
+ * would cut the corner on every bend. Closures sit 600-1000 units apart and the
+ * view is 130 deep, so only one is ever on screen: ~30 segments, and 48 is room
+ * to spare.
+ */
+const MAX_WALL = 48;
+const WALL_SEG = 6;
 
 const VIEW_AHEAD = 130;
 const VIEW_BEHIND = 6;
@@ -135,6 +144,7 @@ export default function DashActors({ course, zRef }: {
 }) {
   const tokenRef = useRef<THREE.InstancedMesh>(null);
   const hazardRef = useRef<THREE.InstancedMesh>(null);
+  const wallRef = useRef<THREE.InstancedMesh>(null);
 
   const kit = useMemo(() => {
     const glow = new Float32Array(MAX_TOKENS * 3);
@@ -166,9 +176,24 @@ export default function DashActors({ course, zRef }: {
     const hazardMat = getHazardMaterial().clone();
     installHazardSkin(hazardMat);
 
+    // Closure walls share the roadblock MATERIAL — one compiled program, so
+    // they pick up the act's treatment for free — but need their own geometry
+    // and therefore their own copy of the instanced attributes.
+    const wGlow = new Float32Array(MAX_WALL * 3);
+    const wStyle = new Float32Array(MAX_WALL);
+    const wGlowAttr = new THREE.InstancedBufferAttribute(wGlow, 3);
+    const wStyleAttr = new THREE.InstancedBufferAttribute(wStyle, 1);
+    wGlowAttr.setUsage(THREE.DynamicDrawUsage);
+    wStyleAttr.setUsage(THREE.DynamicDrawUsage);
+
+    const wallGeo = new THREE.BoxGeometry(HAZ_W, HAZ_H, WALL_SEG);
+    wallGeo.setAttribute('aGlow', wGlowAttr);
+    wallGeo.setAttribute('aStyle', wStyleAttr);
+
     return {
       tokenGeo, tokenMat, glow, lit, glowAttr, litAttr,
       hazardGeo, hazardMat, hGlow, hStyle, hGlowAttr, hStyleAttr,
+      wallGeo, wGlow, wStyle, wGlowAttr, wStyleAttr,
     };
   }, []);
 
@@ -231,6 +256,35 @@ export default function DashActors({ course, zRef }: {
     hm.instanceMatrix.needsUpdate = true;
     kit.hGlowAttr.needsUpdate = true;
     kit.hStyleAttr.needsUpdate = true;
+
+    // ── Closure walls ──
+    const wm = wallRef.current;
+    let w = 0;
+    if (wm) {
+      for (const c of course.closures) {
+        if (c.z1 < lo) continue;
+        if (c.z0 > hi) break;
+        const from = Math.max(c.z0, lo);
+        const to = Math.min(c.z1, hi);
+        for (let zz = from; zz < to && w < MAX_WALL; zz += WALL_SEG) {
+          // Sampled at the segment's own z so the wall follows the bend
+          // instead of cutting the corner.
+          _p.set(laneX(course, c.lane, zz), 1, zz + WALL_SEG / 2);
+          _m.compose(_p, _q, _s);
+          wm.setMatrixAt(w, _m);
+          hazardTint(zz, _c);
+          kit.wGlow[w * 3] = _c.r;
+          kit.wGlow[w * 3 + 1] = _c.g;
+          kit.wGlow[w * 3 + 2] = _c.b;
+          kit.wStyle[w] = hazardStyle(zz);
+          w++;
+        }
+      }
+      wm.count = w;
+      wm.instanceMatrix.needsUpdate = true;
+      kit.wGlowAttr.needsUpdate = true;
+      kit.wStyleAttr.needsUpdate = true;
+    }
   });
 
   return (
@@ -245,6 +299,11 @@ export default function DashActors({ course, zRef }: {
       <instancedMesh
         ref={hazardRef}
         args={[kit.hazardGeo, kit.hazardMat, MAX_HAZARDS]}
+        frustumCulled={false}
+      />
+      <instancedMesh
+        ref={wallRef}
+        args={[kit.wallGeo, kit.hazardMat, MAX_WALL]}
         frustumCulled={false}
       />
     </>

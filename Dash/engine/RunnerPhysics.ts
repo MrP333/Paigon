@@ -15,7 +15,7 @@
 
 import {
   LANES, LANE_W, LANE_CHANGE_S, RESET_SPEED, RACE_MS,
-  speedCeilingAt, RunCourse, HazardRow, laneX,
+  speedCeilingAt, RunCourse, HazardRow, laneX, closedLaneAt,
 } from './RunnerCourse';
 
 /** 120Hz. Fine enough that a 0.18s lane change resolves smoothly. */
@@ -218,6 +218,20 @@ export function step(
     }
     s.rowCursor++;
     s.pendingRowStep = s.stepNo;
+  }
+
+  // ── Sitting in a lane that is shut ──
+  // Charged on the same terms as a row, immunity included, so holding a closed
+  // lane costs a hit every CONTACT_IMMUNE_S rather than every step. The
+  // generator guarantees you were never forced in, so staying is a choice.
+  const closed = closedLaneAt(course, s.z);
+  if (closed >= 0 && s.immuneS <= 0 &&
+      Math.abs(s.lanePos - closed) * LANE_W < HIT_DIST) {
+    s.crashes++; ev.crashed = true;
+    s.streak = 0;
+    s.immuneS = CONTACT_IMMUNE_S;
+    s.cleanS = 0;
+    s.speed = Math.max(RESET_SPEED, s.speed * CONTACT_RETAIN);
   }
 
   if (s.elapsedS * 1000 >= RACE_MS) s.finished = true;

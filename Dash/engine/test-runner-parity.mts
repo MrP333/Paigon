@@ -12,9 +12,15 @@ for (const code of ['ROOM1','7FYXG','TDN64','SOLO_PRACTICE','zz','A']) {
   const rowsEq = JSON.stringify(a.rows) === JSON.stringify(b.rows);
   const tokEq  = JSON.stringify(a.tokens) === JSON.stringify(b.tokens);
   const swayEq = JSON.stringify(a.sway) === JSON.stringify(b.sway);
-  if (!rowsEq || !tokEq || !swayEq) { bad++; console.log(`FAIL course ${code} rows=${rowsEq} tokens=${tokEq} sway=${swayEq}`); }
+  // Closures come off their own PRNG stream, so they can drift without moving a
+  // single row — and a lane shut on one side only would reject honest runs.
+  const closEq = JSON.stringify(a.closures) === JSON.stringify(b.closures);
+  if (!rowsEq || !tokEq || !swayEq || !closEq) {
+    bad++;
+    console.log(`FAIL course ${code} rows=${rowsEq} tokens=${tokEq} sway=${swayEq} closures=${closEq}`);
+  }
 }
-console.log(`course generation: ${bad===0?'identical across 6 codes':'MISMATCH'}  (rows/tokens/sway)`);
+console.log(`course generation: ${bad===0?'identical across 6 codes':'MISMATCH'}  (rows/tokens/sway/closures)`);
 
 // 2 ── replaying the same trace must give bit-identical state
 function makeTrace(seed:number, n:number) {
@@ -75,7 +81,9 @@ console.log(`plausibility gate: ${checks.length} cases ${bad===0?'all correct':'
   const KEYS = ['TOKEN_SPACING','MIN_GAP','EASY_GAP','RESET_SPEED','SPEED_CAP',
     'CEILING_WINDOW_S','CEILING_LOOKAHEAD','RAMP_FULL_Z','CHARGE_RATE',
     'CONTACT_RETAIN','START_CLEAR','LANE_W','LANE_CHANGE_S','REACT_MARGIN_S',
-    'PLAYER_HALF','CONTACT_IMMUNE_S','RACE_MS','LANES'];
+    'PLAYER_HALF','CONTACT_IMMUNE_S','RACE_MS','LANES',
+    'CLOSURE_MIN_LEN','CLOSURE_MAX_LEN','CLOSURE_OPEN_MIN','CLOSURE_OPEN_MAX',
+    'CLOSURE_START_Z','CLOSURE_LEAD'];
   const tsSrc = fs.readFileSync(new URL('./RunnerCourse.ts', import.meta.url), 'utf8')
               + fs.readFileSync(new URL('./RunnerPhysics.ts', import.meta.url), 'utf8');
   const cjSrc = fs.readFileSync(new URL('../../MazerGame/server/runner.cjs', import.meta.url), 'utf8');

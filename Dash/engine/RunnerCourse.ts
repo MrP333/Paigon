@@ -155,6 +155,97 @@ export function speedCeilingAt(course: RunCourse, z: number, fromRow = 0): numbe
   return Math.min(SPEED_CAP, minGap / CEILING_WINDOW_S);
 }
 
+// ── Lane closures ─────────────────────────────────────────────────────────────
+
+/**
+ * Closures are measured in DISTANCE, never in seconds, and that is the whole
+ * point of them.
+ *
+ * A closure timed in seconds would cover more ground for a fast player than a
+ * slow one, so two people in the same lobby would be running physically
+ * different courses — the one thing a head-to-head contest cannot survive. As a
+ * stretch of track, everyone meets the identical closure and going fast simply
+ * means spending less time inside it, which is the trade speed already carries.
+ *
+ * Length is kept well under what it could be. At a typical 38 u/s a run covers
+ * ~3450 units, so 150-250 units is four to six seconds: an event, not the
+ * default state. A 10-second closure with a 3-second break would have left a
+ * lane shut for roughly 77% of the race and quietly turned Dash into a two-lane
+ * game.
+ */
+export const CLOSURE_MIN_LEN = 120;
+export const CLOSURE_MAX_LEN = 180;
+/** Open track between closures. Deliberately longer than the closures. */
+export const CLOSURE_OPEN_MIN = 600;
+export const CLOSURE_OPEN_MAX = 1000;
+/** No closures until the player has settled in. */
+export const CLOSURE_START_Z = 400;
+/**
+ * How far ahead of a closure the generator already treats the lane as shut.
+ *
+ * Without this the generator could emit a row at z-10 that blocks the other two
+ * lanes, forcing the player into the very lane that closes at z — contact with
+ * nothing they could have done. Collision still only starts at z0; this only
+ * constrains what the generator is allowed to build in the run-up.
+ */
+export const CLOSURE_LEAD = 80;
+
+export interface Closure {
+  /** Collision starts here. */
+  z0: number;
+  z1: number;
+  lane: number;
+}
+
+/** The lane shut at `z`, or -1. Closures are sorted and never overlap. */
+export function closedLaneAt(course: RunCourse, z: number): number {
+  for (const c of course.closures) {
+    if (z < c.z0) break;
+    if (z <= c.z1) return c.lane;
+  }
+  return -1;
+}
+
+/** As above, but including the run-up the generator must respect. */
+export function closedForGenAt(course: RunCourse, z: number): number {
+  for (const c of course.closures) {
+    if (z < c.z0 - CLOSURE_LEAD) break;
+    if (z <= c.z1) return c.lane;
+  }
+  return -1;
+}
+
+/**
+ * Closures come off their own PRNG stream, seeded apart from the row stream.
+ * Sharing one would shift every row and token in the game the moment a closure
+ * constant changed, and there would be no way to tell a real regression from
+ * the course simply being different.
+ */
+function generateClosures(code: string): Closure[] {
+  const rng = mulberry32(seedFromCode(code || 'SOLO_PRACTICE') ^ 0x5bf03635);
+  const out: Closure[] = [];
+  let z = CLOSURE_START_Z + rng() * (CLOSURE_OPEN_MAX - CLOSURE_OPEN_MIN);
+  let last = -1;
+  while (z < COURSE_LEN) {
+    const len = CLOSURE_MIN_LEN + rng() * (CLOSURE_MAX_LEN - CLOSURE_MIN_LEN);
+    // OUTER LANES ONLY, and this is a fairness rule rather than a taste one.
+    //
+    // Shutting the middle lane splits the track into two corridors that cannot
+    // reach each other, because crossing the shut lane is itself contact.
+    // rowIsFair only asks whether a lane change FITS IN THE TIME, never whether
+    // the path crosses something closed, so it happily certified rows whose only
+    // open lane sat on the far side of the closure: a guaranteed hit decided by
+    // which side you happened to be on, which is luck. Measured at 34% of rows
+    // inside a closure. Outer-only leaves two adjacent lanes, always mutually
+    // reachable, and the flaw cannot occur.
+    const lane = rng() < 0.5 ? 0 : LANES - 1;
+    out.push({ z0: z, z1: z + len, lane });
+    last = lane;
+    z += len + CLOSURE_OPEN_MIN + rng() * (CLOSURE_OPEN_MAX - CLOSURE_OPEN_MIN);
+  }
+  return out;
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 /** Purely cosmetic — every kind blocks its lane identically. */
@@ -188,6 +279,8 @@ export interface RunCourse {
   code: string;
   rows: HazardRow[];
   tokens: Token[];
+  /** Lanes shut over a stretch. Sorted by z0, never overlapping. */
+  closures: Closure[];
   /** Lateral sway of the track centre; lanes are laid out either side of it. */
   sway: [number, number, number];
   length: number;
@@ -257,9 +350,12 @@ export function reachable(from: number, to: number, gap: number): boolean {
   return gap / RESET_SPEED >= need;
 }
 
-function openLanes(blocked: number[]): number[] {
+function openLanes(blocked: number[], closed = -1): number[] {
   const out: number[] = [];
-  for (let l = 0; l < LANES; l++) if (!blocked.includes(l)) out.push(l);
+  for (let l = 0; l < LANES; l++) {
+    if (l === closed) continue;
+    if (!blocked.includes(l)) out.push(l);
+  }
   return out;
 }
 
@@ -282,6 +378,7 @@ export function generateRun(code: string): RunCourse {
     tokens: [],
     sway: [rng() * Math.PI * 2, rng() * Math.PI * 2, rng() * Math.PI * 2],
     length: COURSE_LEN,
+    closures: generateClosures(code),
   };
 
   let z = START_CLEAR;
@@ -300,15 +397,23 @@ export function generateRun(code: string): RunCourse {
     const wantTwo = rng() < ramp * 0.55;
     const candidates = buildCandidates(wantTwo, rng);
 
+    // A lane already shut here leaves two to play with, so a row may take at
+    // most one of them. Blocking the shut lane as well is not a harder row, it
+    // is the same row drawn twice. The rng calls above happen either way, so
+    // the stream — and therefore every course outside a closure — is unchanged.
+    const closed = closedForGenAt(course, z);
+
     let chosen: number[] | null = null;
     for (const blocked of candidates) {
-      if (rowIsFair(prevOpen, openLanes(blocked), gap)) { chosen = blocked; break; }
+      if (closed >= 0 && blocked.includes(closed)) continue;
+      if (rowIsFair(prevOpen, openLanes(blocked, closed), gap)) { chosen = blocked; break; }
     }
     // Fall back to a single blocked lane, then to a free row, rather than ever
     // emitting something unclearable.
     if (!chosen) {
       for (let l = 0; l < LANES; l++) {
-        if (rowIsFair(prevOpen, openLanes([l]), gap)) { chosen = [l]; break; }
+        if (l === closed) continue;
+        if (rowIsFair(prevOpen, openLanes([l], closed), gap)) { chosen = [l]; break; }
       }
     }
     if (!chosen) continue;
@@ -316,8 +421,10 @@ export function generateRun(code: string): RunCourse {
     const row: HazardRow = { z, blocked: chosen, kind: KINDS[Math.floor(rng() * KINDS.length)], gap };
     course.rows.push(row);
 
-    const nowOpen = openLanes(chosen);
-    placeTokens(course, rng, z - gap, z, nowOpen);
+    // Tokens follow the open set, so a shut lane is never baited with a trail
+    // the player cannot collect.
+    const nowOpen = openLanes(chosen, closed);
+    placeTokens(course, rng, z - gap, z, nowOpen, closed);
     prevOpen = nowOpen;
   }
 
@@ -351,10 +458,15 @@ function buildCandidates(wantTwo: boolean, rng: () => number): number[][] {
  */
 function placeTokens(
   course: RunCourse, rng: () => number,
-  prevZ: number, rowZ: number, nowOpen: number[],
+  prevZ: number, rowZ: number, nowOpen: number[], closed = -1,
 ) {
   if (prevZ <= 0) return;
-  const blockedAhead = [0, 1, 2].filter(l => !nowOpen.includes(l));
+  // A temptation trail may dead-end into a BLOCKED ROW, never into a SHUT LANE.
+  // The whole mechanic rests on being able to ride the trail and bail before
+  // the row — that is why a doomed trail stops short. A closed lane offers no
+  // such out: entering it is contact on the spot, so a trail laid there is bait
+  // with no skill in it.
+  const blockedAhead = [0, 1, 2].filter(l => l !== closed && !nowOpen.includes(l));
   const temptation = blockedAhead.length > 0 && rng() < 0.22;
   const lane = temptation
     ? blockedAhead[Math.floor(rng() * blockedAhead.length)]
