@@ -56,6 +56,8 @@ export interface RunnerState {
   /** Continuous lane position; integral values are lane centres. */
   lanePos: number;
   laneTarget: number;
+  /** One press remembered while a lane change is in flight. 0 is empty. */
+  bufferedSteer: -1 | 0 | 1;
   immuneS: number;
   /** Seconds since the last contact — what the speed charge is built from. */
   cleanS: number;
@@ -119,7 +121,7 @@ export function initialState(): RunnerState {
   const mid = (LANES - 1) / 2;
   return {
     z: 0, speed: RESET_SPEED,
-    lanePos: mid, laneTarget: mid,
+    lanePos: mid, laneTarget: mid, bufferedSteer: 0,
     immuneS: 0, cleanS: 0, bestCleanS: 0,
     tokens: 0, tokensSeen: 0,
     streak: 0, bestStreak: 0, bands: [0, 0, 0], lastTokenStep: -1,
@@ -160,13 +162,40 @@ export function step(
   // a lane change stops costing anything, which is what makes the 0.18s a
   // real price rather than a visual.
   const moveInFlight = s.lanePos !== s.laneTarget;
-  if (input.steer !== 0 && !moveInFlight) {
-    const want = Math.round(s.laneTarget) + input.steer;
-    if (want >= 0 && want <= LANES - 1) s.laneTarget = want;
+  if (input.steer !== 0) {
+    if (!moveInFlight) {
+      const want = Math.round(s.laneTarget) + input.steer;
+      if (want >= 0 && want <= LANES - 1) s.laneTarget = want;
+    } else {
+      // ONE press is remembered while a move is in flight, and released the
+      // instant it lands.
+      //
+      // The commitment above is still absolute: the move in progress runs to
+      // its target and cannot be retargeted, so a lane still costs the full
+      // LANE_CHANGE_S. What this stops is the press being DESTROYED. Before,
+      // a second tap anywhere in the first 183ms simply vanished and the
+      // player had to tap a third time, while rowIsFair was certifying rows
+      // on the assumption that a two-lane move costs 2 * LANE_CHANGE_S back to
+      // back — a standard the input could only meet with a frame-perfect
+      // re-press. The generator's arithmetic and the playable reality now
+      // agree.
+      //
+      // Last press wins, matching the client, so holding a direction down or
+      // mashing both cannot stack moves.
+      s.bufferedSteer = input.steer;
+    }
   }
   const laneStep = dt / LANE_CHANGE_S;
   if (s.lanePos < s.laneTarget) s.lanePos = Math.min(s.laneTarget, s.lanePos + laneStep);
   else if (s.lanePos > s.laneTarget) s.lanePos = Math.max(s.laneTarget, s.lanePos - laneStep);
+
+  // Released on the step the slide completes, so a chained move starts without
+  // a wasted frame.
+  if (s.bufferedSteer !== 0 && s.lanePos === s.laneTarget) {
+    const want = Math.round(s.laneTarget) + s.bufferedSteer;
+    s.bufferedSteer = 0;
+    if (want >= 0 && want <= LANES - 1) s.laneTarget = want;
+  }
 
   // ── Charge, clamped to what the course ahead can actually be cleared at ──
   s.cleanS += dt;
