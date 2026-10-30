@@ -76,6 +76,8 @@ interface Props {
   playerName?:  string;
   playerColor?: string;
   balance?:     number;
+  /** Paid tiers, balance and points exist only where real money is enabled. */
+  paidEnabled?: boolean;
   isLoggedIn?:  boolean;
   soloRunsToday?: number;
   isDev?:       boolean;
@@ -84,7 +86,7 @@ interface Props {
   lossStreak?:  number;
 }
 
-export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete, playerName: savedName, playerColor: savedColor, balance = 0, isLoggedIn, soloRunsToday, isDev, points, winStreak = 0, lossStreak = 0 }: Props) {
+export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete, playerName: savedName, playerColor: savedColor, balance = 0, paidEnabled = false, isLoggedIn, soloRunsToday, isDev, points, winStreak = 0, lossStreak = 0 }: Props) {
   const color = savedColor ?? '#00ff88';
   const [selectedTier, setSelectedTier] = useState('free');
   const runsLeft = SOLO_DAILY_LIMIT - (soloRunsToday ?? 0);
@@ -144,16 +146,16 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
       {/* ── Top bar ── */}
       {isLoggedIn && (
         <div style={{ position: 'absolute', top: 56, right: 20, display: 'flex', alignItems: 'center', gap: 10, zIndex: 2 }}>
-          <div style={{ display: 'inline-flex', alignItems: 'center', background: 'rgba(0,255,136,.08)', borderRadius: 999, padding: '4px 12px', color: '#00ff88', fontSize: '0.7rem', fontWeight: 800, letterSpacing: '0.04em', fontFamily: 'inherit', border: '1px solid rgba(0,255,136,.3)', animation: 'balance-border 4s ease-in-out infinite' }}>
+          {paidEnabled && <div style={{ display: 'inline-flex', alignItems: 'center', background: 'rgba(0,255,136,.08)', borderRadius: 999, padding: '4px 12px', color: '#00ff88', fontSize: '0.7rem', fontWeight: 800, letterSpacing: '0.04em', fontFamily: 'inherit', border: '1px solid rgba(0,255,136,.3)', animation: 'balance-border 4s ease-in-out infinite' }}>
             {Math.floor(balance / 10)} PC
-          </div>
+          </div>}
           <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
             <div style={{ width: 28, height: 28, borderRadius: '50%', background: color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 800, color: '#000', flexShrink: 0, boxShadow: `0 0 14px ${color}aa` }}>
               {(savedName ?? '')[0]?.toUpperCase() || '?'}
             </div>
             <div>
               <div style={{ color: 'rgba(255,255,255,.65)', fontSize: '0.75rem', fontWeight: 700, lineHeight: 1.2 }}>{savedName || 'Player'}</div>
-              {points !== undefined && (() => { const r = getRank(points); return <div style={{ fontSize: '0.58rem', fontWeight: 800, color: r.color, letterSpacing: '0.1em' }}>{r.label} · {points.toLocaleString()} pts</div>; })()}
+              {paidEnabled && points !== undefined && (() => { const r = getRank(points); return <div style={{ fontSize: '0.58rem', fontWeight: 800, color: r.color, letterSpacing: '0.1em' }}>{r.label} · {points.toLocaleString()} pts</div>; })()}
             </div>
           </div>
         </div>
@@ -170,7 +172,7 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
               DASH
             </h1>
             <p style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,.38)', letterSpacing: '0.04em' }}>
-              Navigate the course faster than everyone else · First to finish wins
+              Same course for everyone · Most tokens in 90 seconds wins
             </p>
           </div>
 
@@ -196,7 +198,7 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <label style={{ fontSize: '0.65rem', fontWeight: 700, letterSpacing: '0.12em', color: 'rgba(255,255,255,.35)', textTransform: 'uppercase' }}>Select Tier</label>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {TIERS.map(t => {
+              {(paidEnabled ? TIERS : TIERS.filter(t => t.entryCents === 0)).map(t => {
                 const tierPaid = t.entryCents > 0;
                 const tierTrialLocked = tierPaid && !trialComplete;
                 const tierAffordable = !tierPaid || balance >= t.entryCents;
@@ -222,7 +224,7 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
           </div>
 
           {/* Trial gate */}
-          {!trialComplete && onBotTrial && (
+          {paidEnabled && !trialComplete && onBotTrial && (
             <div style={{ padding: '12px 14px', borderRadius: 10, background: 'rgba(255,160,32,.07)', border: '1px solid rgba(255,160,32,.25)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
               <div>
                 <div style={{ fontSize: '0.68rem', fontWeight: 800, color: '#ffa020', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 2 }}>Solo Trial Required</div>
@@ -263,7 +265,7 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
           </div>
 
           <p style={{ textAlign: 'center', fontSize: '0.7rem', color: 'rgba(255,255,255,.18)', lineHeight: 1.6 }}>
-            {trialComplete ? 'Skill-based · Same course · No house edge' : 'Complete trial to unlock competitive lobbies · 18+ only'}
+            {paidEnabled ? (trialComplete ? 'Skill-based · Same course · No house edge' : 'Complete trial to unlock competitive lobbies · 18+ only') : 'Skill-based · Same course · Free to play'}
           </p>
 
         </div>

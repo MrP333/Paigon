@@ -1,12 +1,15 @@
 import { useState } from 'react';
-import { loadStripe } from '@stripe/stripe-js';
+// '/pure' so that merely importing does not fetch Stripe.js; it loads only
+// when a deposit form is actually opened, which production never does.
+import { loadStripe } from '@stripe/stripe-js/pure';
+import { ENV } from '../services/env';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { User } from 'firebase/auth';
 
-const STRIPE_PK = 'pk_test_51Tj0P6KucA1LYHuIKPYkDXGhhu51NXIMiYGZJF2nmOLcEC2SxXuWwsBURJ0d8MVwQL81gC3ykw7JzcUVwjFRBtZd00G3oesKnp';
-const SERVER = 'https://mazergame11-production.up.railway.app';
+const SERVER = ENV.serverUrl;
 
-const stripePromise = loadStripe(STRIPE_PK);
+let stripePromise: ReturnType<typeof loadStripe> | null = null;
+const getStripe = () => (stripePromise ??= loadStripe(ENV.stripePublishableKey));
 
 interface Package {
   id: string;
@@ -162,7 +165,7 @@ export default function DepositModal({ user, onClose, onSuccess }: Props) {
               <span style={{ color: 'rgba(255,255,255,0.6)', fontSize: '0.82rem' }}>{selected.label} — {pc(selected.creditCents)}</span>
               <span style={{ fontWeight: 800, color: '#ffa020' }}>{usd(selected.priceCents)}</span>
             </div>
-            <Elements stripe={stripePromise} options={{ clientSecret, appearance: { theme: 'night', variables: { colorPrimary: '#ffa020', borderRadius: '8px' } } }}>
+            <Elements stripe={getStripe()} options={{ clientSecret, appearance: { theme: 'night', variables: { colorPrimary: '#ffa020', borderRadius: '8px' } } }}>
               <CheckoutForm pkg={selected} onSuccess={handleSuccess} onBack={() => { setSelected(null); setClientSecret(null); }} />
             </Elements>
           </>

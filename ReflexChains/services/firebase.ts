@@ -1,16 +1,15 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { getAuth, connectAuthEmulator } from 'firebase/auth';
+import { getFirestore, connectFirestoreEmulator } from 'firebase/firestore';
+import { ENV } from './env';
 
-const firebaseConfig = {
-  apiKey: "AIzaSyAIEYryVjB1gX2bzXWERNI0udfjHXuXwzc",
-  authDomain: "paigonco.firebaseapp.com",
-  projectId: "paigonco",
-  storageBucket: "paigonco.appspot.com",
-  messagingSenderId: "879434208536",
-  appId: "1:879434208536:web:5ff633fc0534c3f1d73a6d"
-};
-
-const app = initializeApp(firebaseConfig);
+const app = initializeApp(ENV.firebase);
 export const auth = getAuth(app);
 export const db = getFirestore(app);
+
+// Local development talks to the Firebase emulators, never a real project.
+// Ports match firebase.json at the repo root.
+if (ENV.useEmulators) {
+  connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true });
+  connectFirestoreEmulator(db, '127.0.0.1', 8080);
+}

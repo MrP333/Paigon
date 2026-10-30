@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { doc, getDoc, setDoc, addDoc, collection, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { auth, db } from './services/firebase';
 import { identifyUser, track } from './services/analytics';
 import CalibrationGate from './components/CalibrationGate';
@@ -16,7 +16,8 @@ import DepositModal from './components/DepositModal';
 import { GameConfig, ResultData } from './types';
 import { useShellBridge } from './services/shellBridge';
 
-const SERVER_URL = 'https://mazergame11-production.up.railway.app';
+import { ENV } from './services/env';
+const SERVER_URL = ENV.serverUrl;
 
 
 export default function App() {
@@ -64,7 +65,7 @@ export default function App() {
         setBalance(data.balanceCents ?? 0);
         if (data.trialCompletedReflex) setTrialComplete(true);
         if (data.isDev) setIsDev(true);
-        identifyUser(user.uid, data.username || user.email || user.uid);
+        identifyUser(user.uid);
         const today = new Date().toISOString().slice(0, 10);
         if (data.soloRunsDate === today) setSoloRunsToday(data.soloRunsToday ?? 0);
         setPoints(data.points ?? 0);
@@ -183,6 +184,12 @@ export default function App() {
           tone: 'warn',
           action: { label: 'Add PC', href: '/account.html' },
         });
+        } else if (res.error === 'paid_play_disabled') {
+          setNotice({
+          title: 'Paid lobbies are not available',
+          body: 'Every Paigon match is free right now. Choose the Free lobby to play.',
+          tone: 'info',
+        });
         } else if (res.error === 'auth_required') {
           setNotice({
           title: 'Sign in required',
@@ -251,33 +258,11 @@ export default function App() {
       const pointsEarned = result.won && isPaid ? 20 : 0;
       if (pointsEarned > 0) setPoints(p => p + pointsEarned);
       track('Game Result', { game: 'ReflexChains', won: result.won, stake: gameConfig?.stakeId, paid: !!isPaid });
+      // Only the cosmetic streak is written here. The result itself is recorded
+      // by the game server from the score it computed.
       setDoc(doc(db, 'users', firebaseUser.uid), {
         winStreak: newWin, lossStreak: newLoss,
       }, { merge: true }).catch(console.error);
-
-      addDoc(collection(db, 'users', firebaseUser.uid, 'matches'), {
-        game: 'REFLEX',
-        won: result.won,
-        stakeId: gameConfig?.stakeId ?? 'free',
-        entryCents: gameConfig?.entryCents ?? 0,
-        stakeCents: gameConfig?.entryCents ?? 0,
-        payoutCents: result.won ? (gameConfig?.payoutCents ?? 0) : 0,
-        opponent: gameConfig?.opponentName ?? 'Opponent',
-        pointsEarned,
-        createdAt: serverTimestamp(),
-      }).catch(console.error);
-
-      if (result.won) {
-        addDoc(collection(db, 'recentActivity'), {
-          game: 'REFLEX',
-          winner: playerName,
-          winnerColor: playerColor,
-          loser: gameConfig?.opponentName ?? 'Opponent',
-          stakeId: gameConfig?.stakeId ?? 'free',
-          payoutCents: gameConfig?.payoutCents ?? 0,
-          createdAt: serverTimestamp(),
-        }).catch(console.error);
-      }
     }
   }
 
@@ -325,6 +310,7 @@ export default function App() {
           playerName={playerName}
           playerColor={playerColor}
           balance={balance}
+          paidEnabled={ENV.realMoney}
           isLoggedIn={!!firebaseUser}
           soloRunsToday={firebaseUser ? soloRunsToday : undefined}
           isDev={isDev}
@@ -354,7 +340,7 @@ export default function App() {
         />
       )}
 
-      {showDeposit && firebaseUser && (
+      {ENV.realMoney && showDeposit && firebaseUser && (
         <DepositModal
           user={firebaseUser}
           onClose={() => setShowDeposit(false)}

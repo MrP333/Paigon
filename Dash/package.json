@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:dev": "vite build --mode development"
   },
   "dependencies": {
     "@react-three/drei": "9.96.1",

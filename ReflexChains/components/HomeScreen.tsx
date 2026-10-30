@@ -82,6 +82,8 @@ interface Props {
   playerName?: string;
   playerColor?: string;
   balance?: number;
+  /** Paid tiers, balance, points and the paid-unlock trial exist only where real money is enabled. */
+  paidEnabled?: boolean;
   isLoggedIn?: boolean;
   soloRunsToday?: number;
   isDev?: boolean;
@@ -90,7 +92,7 @@ interface Props {
   lossStreak?: number;
 }
 
-export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete, playerName: savedName, playerColor: savedColor, balance = 0, isLoggedIn, soloRunsToday, isDev, points, winStreak = 0, lossStreak = 0 }: Props) {
+export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete, playerName: savedName, playerColor: savedColor, balance = 0, paidEnabled = false, isLoggedIn, soloRunsToday, isDev, points, winStreak = 0, lossStreak = 0 }: Props) {
   const color = savedColor ?? '#22d3ee';
   const [selectedTier, setSelectedTier] = useState('free');
   const runsLeft = SOLO_DAILY_LIMIT - (soloRunsToday ?? 0);
@@ -199,6 +201,7 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
       {/* Top bar — account */}
       {isLoggedIn && (
         <div style={{ position: 'absolute', top: 56, right: 20, display: 'flex', alignItems: 'center', gap: 10, zIndex: 2 }}>
+          {paidEnabled && (
           <div style={{
             display: 'inline-flex', alignItems: 'center',
             background: 'rgba(0,255,136,0.08)', border: '1px solid rgba(0,255,136,0.22)',
@@ -208,13 +211,14 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
           }}>
             {Math.floor(balance / 10)} PC
           </div>
+          )}
           <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
             <div style={{ width: 26, height: 26, borderRadius: '50%', background: color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 800, color: '#000', flexShrink: 0 }}>
               {(savedName ?? '')[0]?.toUpperCase() || '?'}
             </div>
             <div>
               <div style={{ color: 'rgba(255,255,255,0.55)', fontSize: '0.75rem', fontWeight: 700, lineHeight: 1.2 }}>{savedName || 'Player'}</div>
-              {points !== undefined && (() => { const r = getRank(points); return (
+              {paidEnabled && points !== undefined && (() => { const r = getRank(points); return (
                 <div style={{ fontSize: '0.58rem', fontWeight: 800, color: r.color, letterSpacing: '0.1em' }}>{r.label} · {points.toLocaleString()} pts</div>
               ); })()}
             </div>
@@ -273,7 +277,7 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
             Stake
           </label>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {TIERS.map(t => {
+            {(paidEnabled ? TIERS : TIERS.filter(t => t.entryCents === 0)).map(t => {
               const tierPaid = t.entryCents > 0;
               const tierTrialLocked = tierPaid && !trialComplete;
               const tierAffordable = !tierPaid || balance >= t.entryCents;
@@ -313,7 +317,7 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
         </div>
 
         {/* Trial gate notice */}
-        {!trialComplete && onBotTrial && (
+        {paidEnabled && !trialComplete && onBotTrial && (
           <div style={{ padding: '12px 14px', borderRadius: 10, background: 'rgba(255,160,32,0.07)', border: '1px solid rgba(255,160,32,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
             <div>
               <div style={{ fontSize: '0.68rem', fontWeight: 800, color: '#ffa020', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 2 }}>Free Trial Required</div>
@@ -381,7 +385,7 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
 
         {/* Footer note */}
         <p style={{ textAlign: 'center', fontSize: '0.7rem', color: 'rgba(255,255,255,0.2)', lineHeight: 1.6 }}>
-          {trialComplete ? 'Skill-based · Equal footing · No house edge' : 'Complete trial to unlock competitive lobbies · 18+ only'}
+          {paidEnabled ? (trialComplete ? 'Skill-based · Equal footing · No house edge' : 'Complete trial to unlock competitive lobbies · 18+ only') : 'Skill-based · Equal footing · Free to play'}
         </p>
       </div>
     </div>
