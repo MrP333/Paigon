@@ -5,7 +5,12 @@
     "firebase-tools": "^15.22.3"
   },
   "scripts": {
+    "dev:stack": "firebase emulators:exec --only auth,firestore --project demo-paigon --ui \"node scripts/dev-server.mjs\"",
+    "emulators": "firebase emulators:start --only auth,firestore --project demo-paigon",
+    "server:dev": "node scripts/dev-server.mjs",
+    "test": "firebase emulators:exec --only auth,firestore --project demo-paigon \"node --test tests/firestore-rules/rules.test.mjs && npm --prefix MazerGame run test:server && npm --prefix Dash run test:parity\"",
     "test:rules": "firebase emulators:exec --only firestore --project demo-paigon-rules \"node --test tests/firestore-rules/rules.test.mjs\"",
+    "check:bundles": "node scripts/check-bundles.mjs",
     "deploy:rules": "firebase deploy --only firestore:rules --project paigonco"
   }
 }
