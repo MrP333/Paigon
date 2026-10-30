@@ -157,6 +157,21 @@ export default function App() {
           body: 'Paid lobbies need a signed-in account so winnings can be credited to you.',
           tone: 'info',
         });
+        else if (res.error === 'play_paused') setNotice({
+          title: 'Matches are paused',
+          body: 'Matchmaking is switched off for a short while. Try again in a few minutes.',
+          tone: 'info',
+        });
+        else if (res.error === 'rate_limited') setNotice({
+          title: 'One moment',
+          body: 'That was a lot of tries in a short time. Wait a few seconds and try again.',
+          tone: 'info',
+        });
+        else setNotice({
+          title: "Couldn't join the lobby",
+          body: 'The game server turned the request down. Refresh the page and try again.',
+          tone: 'warn',
+        });
         setScreen('home');
       }
     });
