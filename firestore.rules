@@ -135,6 +135,9 @@ service cloud.firestore {
 
     // ── Server-only ────────────────────────────────────────────────────────
     match /stripeEvents/{id}       { allow read, write: if false; }
+    // Runs held for review (server/integrity.cjs). Not even the flagged
+    // player reads this; they see underReview on their own match record.
+    match /integrityFlags/{id}     { allow read, write: if false; }
 
     // ── Default: deny everything not explicitly allowed ────────────────────
     match /{document=**} {

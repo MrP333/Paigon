@@ -156,6 +156,16 @@ test('public feeds are readable by anyone and writable by no browser', async () 
   }
 });
 
+test('the integrity review queue is server-only, even for the flagged player', async () => {
+  await seed(db => setDoc(doc(db, 'integrityFlags/type_ABC_alice'), { uid: 'alice', status: 'open' }));
+  await assertFails(getDoc(doc(user('alice'), 'integrityFlags/type_ABC_alice')));
+  await assertFails(getDoc(doc(anon(), 'integrityFlags/type_ABC_alice')));
+  await assertFails(setDoc(doc(user('alice'), 'integrityFlags/type_ABC_alice'), { uid: 'alice', status: 'cleared' }));
+  // Nor can a player lift the marker on their own match record.
+  await seed(db => setDoc(doc(db, 'users/alice/matches/type_ABC'), { game: 'type', won: true, underReview: true }));
+  await assertFails(setDoc(doc(user('alice'), 'users/alice/matches/type_ABC'), { underReview: false }, { merge: true }));
+});
+
 test('unknown collections are closed', async () => {
   await assertFails(setDoc(doc(user('alice'), 'anything/x'), { v: 1 }));
   await assertFails(getDoc(doc(anon(), 'stripeEvents/x')));

@@ -18,16 +18,22 @@ Prioritised. "Done" items are on `v1/free-play-launch` with tests named.
 | CORS only for the site's origins | "HTTP routes answer the browser CORS preflight…" |
 | Rooms cannot stay open forever (deadline + sweeper) | code review; Dash deadline exercised by the full-race test |
 | Release gate against development bundles | `npm run check:bundles` (verified to reject one) |
+| Inhuman runs held off the leaderboard for admin review; flag kept off public records | `integrity.test.cjs`; "an inhuman run keeps its match result…"; rules test "integrity review queue is server-only" |
+| Usage counts carry no identifiers; Do Not Track / GPC browsers not counted; rate limited | "site events are counted (no identifiers)…" |
+| HSTS and Permissions-Policy headers; long caching only for content-hashed game assets | `game-website/vercel.json` |
 
 ## Open — before real money
 
-1. **Bots and automation.** Nothing distinguishes a script from a person. Most
-   exposed: TypeStrike (a bot typing just under 24 keys/s is accepted) and
-   Reflex Chains (perfect clicking). Options, cheapest first: per-account
-   behavioural flags from data the server already has (inhuman consistency of
-   timing); Cloudflare Turnstile at signup and queue (free tier); identity
-   verification for paid play, which the payment provider will require anyway.
-   reCAPTCHA alone does not stop a determined bot inside a game.
+1. **Bots and automation.** Runs beyond human limits are now held for
+   review (`server/integrity.cjs`: Reflex mean reaction, Odd Signal answer
+   speed, TypeStrike wpm, perfect fast Mazer routes). A bot tuned to a strong
+   human's pace still passes. TypeStrike in particular only bounds the finish
+   by the server clock when the client sends progress reports; a client that
+   sends none is held only by the physical floor and the wpm flag. Next steps,
+   cheapest first: require progress reports for a TypeStrike finish;
+   per-account history of flags; Cloudflare Turnstile at signup and queue
+   (free tier); identity verification for paid play, which the payment
+   provider will require anyway.
 2. **One account per person.** Not enforced. For paid play, identity
    verification through the payment provider is the practical control.
 3. **Collusion** (two accounts in one lobby, one throwing). Needs per-pair

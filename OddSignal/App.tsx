@@ -115,6 +115,18 @@ export default function App() {
     });
     sock.on('connect_error', () => console.warn('[odd-signal] socket connect error'));
 
+    // The server closes a match nobody finished within its time limit.
+    sock.on('match:expired', () => {
+      setNotice({
+        title: 'Match closed',
+        body: 'Nobody finished this match before its time limit, so it was closed without a result. It does not count toward your record.',
+        tone: 'info',
+      });
+      setQueueCount(undefined);
+      setGameConfig(null);
+      setScreen('home');
+    });
+
     sock.on('tournament:lobby-assigned', (data: any) => {
       if (data.game !== 'ODD') return;
       if (data.autoAdvance) { setTournamentBanner(`You auto-advanced to Round ${(data.roundNumber || 0) + 1}!`); return; }
@@ -128,7 +140,7 @@ export default function App() {
       if (me) { const s = ['st','nd','rd','th'][Math.min(me.rank - 1, 3)]; const p = me.prizeCents > 0 ? ` — +${Math.round(me.prizeCents / 100)} PC!` : ''; setTournamentBanner(`Tournament over! You finished ${me.rank}${s}${p}`); if (me.prizeCents > 0) setBalance(b => b + me.prizeCents); }
     });
 
-    return () => { sock.off('odd:matched'); sock.off('balance:update'); sock.off('queue:count'); sock.off('tournament:lobby-assigned'); sock.off('tournament:eliminated'); sock.off('tournament:complete'); };
+    return () => { sock.off('odd:matched'); sock.off('balance:update'); sock.off('queue:count'); sock.off('tournament:lobby-assigned'); sock.off('tournament:eliminated'); sock.off('tournament:complete'); sock.off('match:expired'); };
   }, []);
 
   function resolveName() {
@@ -170,6 +182,21 @@ export default function App() {
           title: 'Sign in required',
           body: 'Paid lobbies need a signed-in account so winnings can be credited to you.',
           tone: 'info',
+        });
+        else if (res.error === 'play_paused') setNotice({
+          title: 'Matches are paused',
+          body: 'Matchmaking is switched off for a short while. Try again in a few minutes.',
+          tone: 'info',
+        });
+        else if (res.error === 'rate_limited') setNotice({
+          title: 'One moment',
+          body: 'That was a lot of tries in a short time. Wait a few seconds and try again.',
+          tone: 'info',
+        });
+        else setNotice({
+          title: "Couldn't join the lobby",
+          body: 'The game server turned the request down. Refresh the page and try again.',
+          tone: 'warn',
         });
         setScreen('home');
       }

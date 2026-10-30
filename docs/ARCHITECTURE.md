@@ -24,7 +24,9 @@ browser ── paigonco.com (Vercel, static) ── page + game <iframe>
 - **Pages** (`game-website/*.html`) are hand-written HTML with inline module
   scripts using the Firebase CDN SDK. Shared pieces: `env.js` (environment),
   `profile.js` (profile creation, `escapeHtml`), `firebase-env.js` (emulators),
-  `nav.js`, `age-gate.js`, `game-shell.js` (overlay ↔ game messages).
+  `nav.js`, `age-gate.js`, `game-shell.js` (overlay ↔ game messages),
+  `analytics.js` (first-party usage counts to the game server; no cookies or
+  identifiers). `admin.html` shows those counts and the review queue.
 - **Games** are React + Vite apps; `npm run build` in a game writes its bundle
   into `game-website/<game>-app/`. Mazer and Dash use React Three Fiber.
 - **Game server** (`MazerGame/server/index.cjs`) does matchmaking, runs each
@@ -47,20 +49,25 @@ browser ── paigonco.com (Vercel, static) ── page + game <iframe>
    - **Mazer**: lowest time among players the server saw reach the exit.
    - **Reflex / Odd Signal**: server-computed score.
    - **TypeStrike**: reported time, bounded by the server's own clock.
-5. `recordMatch()` writes the result (below). Rooms that never resolve are
-   expired by a sweeper; Dash rooms have a hard deadline.
+5. `recordMatch()` writes the result (below). Each run first goes through
+   `server/integrity.cjs`; a run a person is very unlikely to produce keeps its
+   match result but earns no leaderboard win or activity entry until an admin
+   clears it (admin page → Held for review). Rooms that never resolve are
+   expired by a sweeper (players get `match:expired`); Dash rooms have a hard
+   deadline.
 
 ## Firestore data model
 
 | Collection | Written by | Read by | Contents |
 |---|---|---|---|
 | `users/{uid}` | browser (allowlisted fields) + server | owner | profile, preferences, cosmetic streaks, practice counters; legacy server fields |
-| `users/{uid}/matches/{game_room}` | server | owner | verified match history |
+| `users/{uid}/matches/{game_room}` | server | owner | verified match history; `underReview` while held |
 | `usernames/{lower}` | browser, in a transaction with the profile | signed-in | uniqueness index |
 | `leaderboard/{uid}` | server | public | name, gamesPlayed, totalWins, per-game played/wins |
 | `matchResults/{game_room}` | server | public | every participant, rank, score, Mazer route efficiency |
 | `recentActivity/{id}` | server | public | homepage feed |
-| `metrics/{date}`, `metrics/{date}/players/{uid}` | server | console only | usage counts; no personal data |
+| `metrics/{date}`, `metrics/{date}/players/{uid}` | server | admin page (via server) | usage counts from games and `POST /events` (site); no personal data |
+| `integrityFlags/{game_room_uid}` | server | admin page (via server) | runs held for review, reasons, review status |
 | `tournaments`, `tournamentSchedules` | server | public / signed-in | tournament system (off) |
 | `stripeEvents` | server | nobody | webhook idempotency (off) |
 
