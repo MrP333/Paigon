@@ -1,105 +1,144 @@
 rules_version = '2';
+
+// Paigon Firestore rules.
+//
+// Principle: the browser may only write things that are purely about the
+// player's own preferences. Anything that is a RESULT — wins, match history,
+// rankings, the public activity feed, balances — is written by the game server
+// (Firebase Admin SDK, which bypasses these rules) from a result it verified.
+//
+// Tests: tests/firestore-rules (run against the emulator, never production).
+
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function isOwner(uid) {
-      return request.auth != null && request.auth.uid == uid;
+    function signedIn() { return request.auth != null; }
+    function isOwner(uid) { return signedIn() && request.auth.uid == uid; }
+
+    // ── Users ──────────────────────────────────────────────────────────────
+    //
+    // An ALLOWLIST, not a denylist. A denylist protects only the fields
+    // someone remembered to list; an allowlist means a field nobody thought
+    // about (a future balance, a future flag) is server-only by default.
+    //
+    // Results, balances and flags — wins, losses, points, balanceCents, isDev,
+    // lastWithdrawalAt and anything else not named here — are server-only.
+    // There is deliberately no admin exception: privileged changes go through
+    // the server or the Firebase console, never through a browser.
+    function profileCreateFields() {
+      return ['uid', 'email', 'username', 'usernameLower', 'createdAt',
+              'eligibilityConfirmed', 'color', 'preferredGame'];
     }
-    function isAdminEmail() {
-      return request.auth.token.email in [
-        'pjgrimes930@gmail.com',
-        'contact@paigonco.com',
-        'cogrimes33@gmail.com'
-      ];
+    function profileUpdateFields() {
+      return profileCreateFields().concat([
+        'usernameChangedAt', 'prefMatchEmail',
+        // Cosmetic, shown only to the player themselves.
+        'winStreak', 'lossStreak', 'winStreakOdd', 'lossStreakOdd',
+        // Practice-run counters and per-game trial completion.
+        'soloRunsDate', 'soloRunsToday', 'soloRunsDateDash', 'soloRunsTodayDash',
+        'soloRunsDateOdd', 'soloRunsTodayOdd', 'soloRunsDateType', 'soloRunsTodayType',
+        'trialCompletedMazer', 'trialCompletedReflex', 'trialCompletedOdd',
+        'trialCompletedDash', 'trialCompletedType',
+        // Responsible-gaming controls (see selfExclusionHolds).
+        'depositLimit', 'selfExclusionUntil'
+      ]);
     }
 
-    // ── Users ──────────────────────────────────────────────────────────────────
+    function validUsername(name) {
+      return name is string && name.matches('^[A-Za-z0-9_]{3,20}$');
+    }
+
+    // A username always comes with its uniqueness index entry: username and
+    // usernameLower must agree, and usernames/{lower} must belong to this user
+    // once the write commits — so the index and the profile can only ever
+    // change together. Checked on create, and on update only when the name is
+    // being changed, so older profiles stay editable.
+    function usernameConsistent(uid) {
+      let d = request.resource.data;
+      let name = d.get('username', null);
+      return name == null || (
+        validUsername(name) &&
+        d.get('usernameLower', null) == name.lower() &&
+        getAfter(/databases/$(database)/documents/usernames/$(name.lower())).data.uid == uid
+      );
+    }
+    function nameChanging() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasAny(['username', 'usernameLower']);
+    }
+
+    // A self-exclusion cannot be shortened or cleared while it is running —
+    // otherwise it is a button the player presses to undo their own limit.
+    // It can always be extended, and once it has expired it can be changed.
+    function selfExclusionHolds() {
+      let before = resource.data.get('selfExclusionUntil', null);
+      let after = request.resource.data.get('selfExclusionUntil', null);
+      return before == null || before < request.time || (after != null && after >= before);
+    }
+
     match /users/{uid} {
-
       allow read: if isOwner(uid);
 
-      // New accounts: server-only fields must not be set by the client
       allow create: if isOwner(uid)
-                    && !('balanceCents' in request.resource.data)
-                    && !('isDev'        in request.resource.data)
-                    && !('points'       in request.resource.data)
-                    && !('lastWithdrawalAt' in request.resource.data);
+                    && request.resource.data.keys().hasOnly(profileCreateFields())
+                    && usernameConsistent(uid);
 
-      // Updates: balanceCents/isDev/points/lastWithdrawalAt are server-only
-      // (Railway Admin SDK bypasses rules). lastWithdrawalAt backs the 12-hour
-      // withdrawal cooldown — client-writable would make the cooldown pointless.
-      // Admin emails can touch any field for testing
+      // affectedKeys rather than keys(): older profiles still carry legacy
+      // fields (wins, points, balanceCents …) and must remain updatable as
+      // long as the update does not touch them.
       allow update: if isOwner(uid)
-                    && (
-                      !request.resource.data.diff(resource.data)
-                        .affectedKeys().hasAny(['balanceCents', 'isDev', 'points', 'lastWithdrawalAt'])
-                      || isAdminEmail()
-                    );
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(profileUpdateFields())
+                    && (!nameChanging() || usernameConsistent(uid))
+                    && selfExclusionHolds();
 
-      // Match history: client may append entries, never modify or delete
+      allow delete: if false;
+
+      // Match history: written by the server from a verified result.
       match /matches/{matchId} {
-        allow read:   if isOwner(uid);
-        allow create: if isOwner(uid)
-                      && request.resource.data.keys().hasAll(['game', 'won', 'createdAt'])
-                      && request.resource.data.createdAt == request.time;
-        allow update, delete: if false;
+        allow read: if isOwner(uid);
+        allow write: if false;
       }
     }
 
-    // ── Leaderboard — public read, server writes only ─────────────────────────
-    match /leaderboard/{uid} {
-      allow read: if true;
-      allow write: if false;
-    }
-
-    // ── Usernames (uniqueness index) ───────────────────────────────────────────
+    // ── Usernames (uniqueness index) ───────────────────────────────────────
+    // Keyed by the lower-cased name. A user holds exactly one: claiming a new
+    // name must release the old one in the same transaction, so names cannot
+    // be hoarded.
     match /usernames/{username} {
-      allow read:   if request.auth != null;
-      allow create: if request.auth != null
-                    && request.resource.data.uid == request.auth.uid;
-      allow delete: if request.auth != null
-                    && resource.data.uid == request.auth.uid;
+      allow read: if signedIn();
+
+      allow create: if signedIn()
+                    && request.resource.data.uid == request.auth.uid
+                    && username.matches('^[a-z0-9_]{3,20}$')
+                    && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.usernameLower == username
+                    && releasesPreviousName(request.auth.uid, username);
+
+      allow delete: if signedIn() && resource.data.uid == request.auth.uid
+                    && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('usernameLower', null) != username;
+
       allow update: if false;
     }
-
-    // ── Stripe events — server only, no client access ─────────────────────────
-    match /stripeEvents/{eventId} {
-      allow read, write: if false;
+    function releasesPreviousName(uid, newName) {
+      let prev = exists(/databases/$(database)/documents/users/$(uid))
+        ? get(/databases/$(database)/documents/users/$(uid)).data.get('usernameLower', null)
+        : null;
+      return prev == null || prev == newName
+        || !existsAfter(/databases/$(database)/documents/usernames/$(prev));
     }
 
-    // ── Site stats — public read (homepage ticker), server writes only ─────────
-    match /siteStats/{docId} {
-      allow read:  if true;
-      allow write: if false;
-    }
+    // ── Public, server-written ─────────────────────────────────────────────
+    match /leaderboard/{uid}       { allow read: if true;     allow write: if false; }
+    match /recentActivity/{id}     { allow read: if true;     allow write: if false; }
+    match /matchResults/{id}       { allow read: if true;     allow write: if false; }
+    match /siteStats/{id}          { allow read: if true;     allow write: if false; }
+    match /tournaments/{id}        { allow read: if true;     allow write: if false; }
+    match /tournamentSchedules/{id}{ allow read: if signedIn(); allow write: if false; }
 
-    // ── Activity feed — public read, authenticated client creates only ─────────
-    // Admin SDK (server) can also write here; client creates require key fields
-    // and a server-issued timestamp to prevent backdating
-    match /recentActivity/{entryId} {
-      allow read: if true;
-      allow create: if request.auth != null
-                    && request.resource.data.keys().hasAll(['game', 'winner', 'createdAt'])
-                    && request.resource.data.createdAt == request.time;
-      allow update, delete: if false;
-    }
+    // ── Server-only ────────────────────────────────────────────────────────
+    match /stripeEvents/{id}       { allow read, write: if false; }
 
-    // ── Tournaments — public read, server Admin SDK writes only ──────────────────
-    match /tournaments/{tournamentId} {
-      allow read:  if true;
-      allow write: if false;
-    }
-
-    // ── Tournament schedules — authenticated read, server writes only ─────────────
-    match /tournamentSchedules/{scheduleId} {
-      allow read:  if request.auth != null;
-      allow write: if false;
-    }
-
-    // ── Default: deny everything not explicitly allowed ────────────────────────
+    // ── Default: deny everything not explicitly allowed ────────────────────
     match /{document=**} {
       allow read, write: if false;
     }
-
   }
 }
