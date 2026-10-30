@@ -13,6 +13,14 @@ done yet; each step is yours to run or to ask for.
 - [ ] Decide whether to clear the 6 pre-launch leaderboard entries (they look
       like your own testing). Firebase console → Firestore → `leaderboard`.
       Not done automatically: it deletes production data.
+- [ ] **Mixpanel is blocked in production today.** The site's security policy
+      (`game-website/vercel.json`, `connect-src`) does not list
+      `api-js.mixpanel.com`, so the games' Mixpanel events never arrive.
+      Either add it there and name Mixpanel in the privacy policy, or remove
+      Mixpanel from the games. The first-party counts on the admin page work
+      either way. Left as it is until you choose.
+- [ ] Game pages ask for a free account before play. Keep that, or let
+      guests play? (A product decision; nothing assumes either.)
 - [ ] Optional: install Java 21 so `npm test` runs on your machine.
 
 ## 2. Verify (all local, nothing deployed)
@@ -25,14 +33,23 @@ npm test                 # rules + server + Dash parity (needs Java 21)
 npm run check:bundles    # must say "Safe to deploy as production"
 ```
 
-Results when I ran them: rules 18/18, server 17/17 including the 90-second
-full Dash race (`SLOW=1`; it simulates five players in real time, so a
-starved machine can make it miss its own clock — one such run failed, the
-reruns passed), ledger 22/22 (development branch), Dash parity
-bit-identical, all five games typecheck with 0 errors, 14/14 pages load in
-headless Chrome with no errors and no money UI, all five games load with the
-Free lobby and no paid tiers and make no Stripe requests, and an end-to-end
-signup → stats → account deletion test passes 15/15 against the emulators.
+Results when I ran them (October 29, 2026):
+
+| Check | Result |
+|---|---|
+| Firestore rules | 19/19 |
+| Game server (`npm --prefix MazerGame run test:server`, emulators) | 24/24, plus the 90-second full Dash race with `SLOW=1`* |
+| Leaderboard integrity rules (in the server suite) | 6/6 unit, plus an end-to-end hold → review → clear test |
+| Ledger (development branch) | 22/22 |
+| Dash parity | bit-identical |
+| Typecheck, all five games | 0 errors |
+| Pages in headless Chrome, production config | 16/16: no errors, no money UI |
+| Accessibility (axe-core, WCAG 2 A/AA) | no serious or critical issues left; 2 minor best-practice notes on game pages |
+| Browser end-to-end on the local stack | account lifecycle 15/15, usage counts 8/8, account visuals 7/7, admin review 10/10 |
+| `npm run check:bundles` | "Safe to deploy as production" |
+
+\* The full race simulates five players in real time; a starved machine can
+make it miss its own clock. One such run failed earlier; reruns passed.
 
 Look at it yourself: `cd game-website && python3 -m http.server 8811`, then
 open http://localhost:8811 (local data, yellow banner).
@@ -80,6 +97,11 @@ cd ~/Desktop/Paigon && git switch main && git merge --ff-only v1/free-play-launc
       in the activity feed; Account shows the match and updated stats.
 - [ ] Account → Delete account on a throwaway account → it is gone.
 - [ ] /tournaments says tournaments are not available yet.
+- [ ] /leaderboard renders (per-game tabs); a mistyped address shows the
+      "That page isn't here" page.
+- [ ] /admin (signed in with a listed, verified email) shows today's visits
+      and an empty "Held for review" list.
+- [ ] Paste a game link into a chat app: the preview shows the Paigon card.
 
 ## 5. Rollback
 
@@ -100,7 +122,11 @@ server together: the new site needs the new server.
 ## Known and accepted for V1
 
 - Desktop only; phone layouts are not a launch target.
-- TypeStrike and Reflex cannot yet tell a bot from a person (docs/SECURITY.md).
+- Runs a person is very unlikely to produce are held off the leaderboard
+  for review (admin page). A careful bot playing at a strong human's pace is
+  not caught (docs/SECURITY.md).
+- Leaderboard wins held for review are restored only when an admin clears
+  them; nothing clears them automatically.
 - Tournaments stay hidden until rebuilt on the V2 ledger.
 - Legal pages carry factual corrections only; full counsel review is pending.
 - The hosted development environment needs accounts you create
