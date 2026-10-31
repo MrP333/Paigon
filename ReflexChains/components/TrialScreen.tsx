@@ -152,7 +152,7 @@ function TrialAttempt({ playerName, playerColor, onComplete, onBack, onRetry }: 
               </div>
               <div style={{ marginTop: 10, fontSize: '0.78rem', color: 'rgba(255,255,255,0.4)', lineHeight: 1.6 }}>
                 {outcome === 'won'
-                  ? 'Competitive lobbies unlocked — good luck out there'
+                  ? 'Competitive lobbies unlocked'
                   : "Beat the SENTINEL's score to unlock competitive lobbies"}
               </div>
             </div>

@@ -562,7 +562,8 @@ export default function GameScreen({ config, socket, onResult }: Props) {
     socket.on('reflex:result', (data: any) => {
       phaseRef.current = 'done'; setPhase('done');
       onResult({
-        won:            data.winnerId === socket.id,
+        // winnerIds lists every player sharing first place.
+        won:            (data.winnerIds ?? [data.winnerId]).includes(socket.id),
         myTimeMs:       myFinalTimeRef.current,
         myScore:        data.myScore        ?? myFinalScoreRef.current,
         myHits:         data.myHits         ?? hitCountRef.current,

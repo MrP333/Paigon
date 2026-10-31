@@ -39,10 +39,10 @@ const CSS = `
 
 const TIERS = [
   { id: 'free',     label: 'Free',    entryCents: 0,    desc: 'No entry fee',       col: '#00ff88', glow: 'rgba(0,255,136,.4)',   bg: 'rgba(0,255,136,.1)'  },
-  { id: 'quick',    label: '5 PC',    entryCents: 50,   desc: '2% rake',            col: '#22d3ee', glow: 'rgba(34,211,238,.4)',  bg: 'rgba(34,211,238,.1)' },
-  { id: 'standard', label: '20 PC',   entryCents: 200,  desc: '2% rake',            col: '#ffd700', glow: 'rgba(255,215,0,.4)',   bg: 'rgba(255,215,0,.1)'  },
-  { id: 'high',     label: '100 PC',  entryCents: 1000, desc: '2% rake',            col: '#ff8c00', glow: 'rgba(255,140,0,.4)',   bg: 'rgba(255,140,0,.1)'  },
-  { id: 'elite',    label: '500 PC',  entryCents: 5000, desc: '2% rake',            col: '#ff0080', glow: 'rgba(255,0,128,.4)',   bg: 'rgba(255,0,128,.1)'  },
+  { id: 'quick',    label: '5 PC',    entryCents: 50,   desc: '2% platform fee',            col: '#22d3ee', glow: 'rgba(34,211,238,.4)',  bg: 'rgba(34,211,238,.1)' },
+  { id: 'standard', label: '20 PC',   entryCents: 200,  desc: '2% platform fee',            col: '#ffd700', glow: 'rgba(255,215,0,.4)',   bg: 'rgba(255,215,0,.1)'  },
+  { id: 'high',     label: '100 PC',  entryCents: 1000, desc: '2% platform fee',            col: '#ff8c00', glow: 'rgba(255,140,0,.4)',   bg: 'rgba(255,140,0,.1)'  },
+  { id: 'elite',    label: '500 PC',  entryCents: 5000, desc: '2% platform fee',            col: '#ff0080', glow: 'rgba(255,0,128,.4)',   bg: 'rgba(255,0,128,.1)'  },
 ];
 
 const RULES = [
@@ -257,7 +257,7 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
           </div>
 
           <p style={{ textAlign: 'center', fontSize: '0.7rem', color: 'rgba(255,255,255,.18)', lineHeight: 1.6 }}>
-            {paidEnabled ? (trialComplete ? 'Skill-based · Same passage · No house edge' : 'Complete trial to unlock competitive lobbies · 18+ only') : 'Skill-based · Same passage · Free to play'}
+            {paidEnabled ? (trialComplete ? 'Skill-based · Same passage · Player vs player' : 'Complete trial to unlock competitive lobbies · 18+ only') : 'Skill-based · Same passage · Free to play'}
           </p>
 
         </div>
