@@ -354,7 +354,8 @@ export default function RunnerScreen({
   useEffect(() => {
     if (!socket || solo || !onResult) return;
     const onDone = (d: any) => onResult({
-      won: d.winnerId === socket.id,
+      // winnerIds lists every player sharing first place.
+      won: (d.winnerIds ?? [d.winnerId]).includes(socket.id),
       myTokens: d.myTokens ?? null,
       winnerName: d.winnerName ?? '',
       players: d.players,

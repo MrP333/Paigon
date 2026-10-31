@@ -64,10 +64,10 @@ function getRank(pts: number): { label: string; color: string } {
 
 const TIERS = [
   { id: 'free',     label: 'Free',    entryCents: 0,    payoutCents: 0,    desc: 'No entry fee' },
-  { id: 'quick',    label: '5 PC',    entryCents: 50,   payoutCents: 98,   desc: 'lobby · 2% rake' },
-  { id: 'standard', label: '20 PC',   entryCents: 200,  payoutCents: 392,  desc: 'lobby · 2% rake' },
-  { id: 'high',     label: '100 PC',  entryCents: 1000, payoutCents: 2940, desc: 'lobby · 2% rake' },
-  { id: 'elite',    label: '500 PC',  entryCents: 5000, payoutCents: 14700, desc: 'lobby · 2% rake' },
+  { id: 'quick',    label: '5 PC',    entryCents: 50,   payoutCents: 98,   desc: 'lobby · 2% platform fee' },
+  { id: 'standard', label: '20 PC',   entryCents: 200,  payoutCents: 392,  desc: 'lobby · 2% platform fee' },
+  { id: 'high',     label: '100 PC',  entryCents: 1000, payoutCents: 2940, desc: 'lobby · 2% platform fee' },
+  { id: 'elite',    label: '500 PC',  entryCents: 5000, payoutCents: 14700, desc: 'lobby · 2% platform fee' },
 ];
 
 function pc(cents: number) { return (cents / 10).toFixed(0) + ' PC'; }
@@ -385,7 +385,7 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
 
         {/* Footer note */}
         <p style={{ textAlign: 'center', fontSize: '0.7rem', color: 'rgba(255,255,255,0.2)', lineHeight: 1.6 }}>
-          {paidEnabled ? (trialComplete ? 'Skill-based · Equal footing · No house edge' : 'Complete trial to unlock competitive lobbies · 18+ only') : 'Skill-based · Equal footing · Free to play'}
+          {paidEnabled ? (trialComplete ? 'Skill-based · Equal footing · Player vs player' : 'Complete trial to unlock competitive lobbies · 18+ only') : 'Skill-based · Equal footing · Free to play'}
         </p>
       </div>
     </div>
