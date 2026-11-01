@@ -18,7 +18,6 @@ import { useShellBridge } from './services/shellBridge';
 
 import { ENV } from './services/env';
 const SERVER_URL = ENV.serverUrl;
-const SOLO_DAILY_LIMIT = 5;
 
 export default function App() {
   const [calibrated, setCalibrated] = useState(
@@ -39,8 +38,6 @@ export default function App() {
   const [playerColor] = useState('#a855f7');
   const [balance, setBalance] = useState(0);
   const [trialComplete, setTrialComplete] = useState(false);
-  const [isDev, setIsDev] = useState(false);
-  const [soloRunsToday, setSoloRunsToday] = useState(0);
   const [points, setPoints]         = useState(0);
   const [winStreak, setWinStreak]   = useState(0);
   const [lossStreak, setLossStreak] = useState(0);
@@ -58,10 +55,7 @@ export default function App() {
         if (data.username) setPlayerName(data.username);
         setBalance(data.balanceCents ?? 0);
         if (data.trialCompletedOdd) setTrialComplete(true);
-        if (data.isDev) setIsDev(true);
         identifyUser(user.uid);
-        const today = new Date().toISOString().slice(0, 10);
-        if (data.soloRunsDateOdd === today) setSoloRunsToday(data.soloRunsTodayOdd ?? 0);
         setPoints(data.points ?? 0);
         setWinStreak(data.winStreakOdd ?? 0);
         setLossStreak(data.lossStreakOdd ?? 0);
@@ -70,17 +64,6 @@ export default function App() {
       }
     });
   }, []);
-
-  async function consumeSoloRun(): Promise<boolean> {
-    if (isDev) return true;
-    if (!firebaseUser) return true;
-    const today = new Date().toISOString().slice(0, 10);
-    if (soloRunsToday >= SOLO_DAILY_LIMIT) return false;
-    const next = soloRunsToday + 1;
-    setSoloRunsToday(next);
-    setDoc(doc(db, 'users', firebaseUser.uid), { soloRunsDateOdd: today, soloRunsTodayOdd: next }, { merge: true }).catch(console.error);
-    return true;
-  }
 
   function getSocket() {
     if (!socketRef.current) {
@@ -206,16 +189,9 @@ export default function App() {
     setScreen('waiting');
   }
 
-  async function handleSolo(name: string, color: string) {
-    const allowed = await consumeSoloRun();
-    if (!allowed) {
-      setNotice({
-        title: 'Daily practice limit reached',
-        body: `You have used all ${SOLO_DAILY_LIMIT} solo runs for today. Come back tomorrow, or jump into a free competitive match right now.`,
-        tone: 'info',
-      });
-      return;
-    }
+  // Practice is unlimited: getting better between matches is the whole point
+  // of a skill game, and a solo run has no opponent and no prize.
+  function handleSolo(name: string, color: string) {
     setPlayerName(name);
     const code = Math.random().toString(36).slice(2, 7).toUpperCase();
     setGameConfig({ roomCode: code, playerName: name, playerColor: color, opponentName: '', opponentColor: '', stakeId: 'free', payoutCents: 0, solo: true });
@@ -288,8 +264,6 @@ export default function App() {
           balance={balance}
           paidEnabled={ENV.realMoney}
           isLoggedIn={!!firebaseUser}
-          soloRunsToday={firebaseUser ? soloRunsToday : undefined}
-          isDev={isDev}
           points={firebaseUser ? points : undefined}
           winStreak={winStreak}
           lossStreak={lossStreak}

@@ -65,7 +65,6 @@ function getRank(pts: number) {
   return                   { label: 'RECRUIT',   color: '#94a3b8' };
 }
 
-const SOLO_DAILY_LIMIT = 5;
 function pc(cents: number) { return Math.floor(cents / 10) + ' PC'; }
 
 interface Props {
@@ -79,17 +78,14 @@ interface Props {
   /** Paid tiers, balance and points exist only where real money is enabled. */
   paidEnabled?: boolean;
   isLoggedIn?:  boolean;
-  soloRunsToday?: number;
-  isDev?:       boolean;
   points?:      number;
   winStreak?:   number;
   lossStreak?:  number;
 }
 
-export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete, playerName: savedName, playerColor: savedColor, balance = 0, paidEnabled = false, isLoggedIn, soloRunsToday, isDev, points, winStreak = 0, lossStreak = 0 }: Props) {
+export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete, playerName: savedName, playerColor: savedColor, balance = 0, paidEnabled = false, isLoggedIn, points, winStreak = 0, lossStreak = 0 }: Props) {
   const color = savedColor ?? '#00ff88';
   const [selectedTier, setSelectedTier] = useState('free');
-  const runsLeft = SOLO_DAILY_LIMIT - (soloRunsToday ?? 0);
 
   useEffect(() => {
     if (document.getElementById('dash-home-css')) return;
@@ -256,12 +252,7 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
               Practice Run
             </button>
 
-            {isLoggedIn && !isDev && soloRunsToday !== undefined && (
-              <div style={{ textAlign: 'center', fontSize: '0.67rem', fontWeight: 600, color: runsLeft <= 0 ? 'rgba(255,107,107,.7)' : 'rgba(255,255,255,.2)' }}>
-                {runsLeft <= 0 ? 'No practice runs left today — resets at midnight' : `${runsLeft} of ${SOLO_DAILY_LIMIT} practice runs left today`}
-              </div>
-            )}
-            {isLoggedIn && isDev && <div style={{ textAlign: 'center', fontSize: '0.67rem', fontWeight: 600, color: 'rgba(168,85,247,.6)' }}>Dev mode — unlimited practice</div>}
+            <div style={{ textAlign: 'center', fontSize: '0.67rem', fontWeight: 600, color: 'rgba(255,255,255,.2)' }}>Unlimited practice</div>
           </div>
 
           <p style={{ textAlign: 'center', fontSize: '0.7rem', color: 'rgba(255,255,255,.18)', lineHeight: 1.6 }}>
