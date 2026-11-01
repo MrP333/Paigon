@@ -27,10 +27,10 @@ split 50/25/15/10), and a subscription product ("Shark Mode").
 
 ## The games: how outcomes are decided
 
-All five share these properties:
+All four share these properties:
 
 - **Identical content.** Every player in a match receives the same game,
-  generated from one seed (the room code): the same maze, the same targets,
+  generated from one seed (the room code): the same maze,
   the same shape sets, the same course, the same passage.
 - **No random events during play** decided by the game's rules.
 - **Results checked by the server**, not taken from the player's browser.
@@ -38,10 +38,12 @@ All five share these properties:
 | Game | What the player does | How the winner is decided | Evidence available |
 |---|---|---|---|
 | Mazer | navigates a 3D maze to the exit | fastest time among players the server saw reach the exit | per-match route efficiency (optimal moves ÷ moves taken), computed by the server |
-| Reflex Chains | clicks appearing targets for 30 s | server-computed score | per-hit timing |
 | Odd Signal | picks the odd shape out of six, repeatedly, for 30 s | most correct answers (server-counted), time as tiebreak | per-answer correctness and time |
 | Dash | steers a runner for a fixed 90 s, collecting tokens | most tokens, from the server replaying the player's inputs; published tiebreaks | full input trace per run |
 | TypeStrike | types a passage | fastest accurate completion, bounded by the server's clock | progress stream |
+
+Reflex Chains (clicking targets for 30 s) was withdrawn from the site on
+October 31, 2026; its code is kept but players cannot reach it.
 
 **Measured skill dominance (Dash, simulation).** In 5-player lobbies, a
 player 50 ms faster to react than four otherwise-identical opponents wins

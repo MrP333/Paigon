@@ -40,16 +40,12 @@ export default function App() {
   const [playerColor, setPlayerColor] = useState('#22d3ee');
   const [balance, setBalance] = useState(0); // balanceCents
   const [trialComplete, setTrialComplete] = useState(false);
-  const [isDev, setIsDev] = useState(false);
-  const [soloRunsToday, setSoloRunsToday] = useState(0);
   const [points, setPoints]         = useState(0);
   const [winStreak, setWinStreak]   = useState(0);
   const [lossStreak, setLossStreak] = useState(0);
   const [queueCount, setQueueCount] = useState<{ count: number; min: number; max: number } | undefined>(undefined);
   const [tournamentBanner, setTournamentBanner] = useState<string | null>(null);
 
-
-  const SOLO_DAILY_LIMIT = 5;
 
   // Firebase auth listener
   useEffect(() => {
@@ -64,10 +60,7 @@ export default function App() {
         if (data.color)    setPlayerColor(data.color);
         setBalance(data.balanceCents ?? 0);
         if (data.trialCompletedReflex) setTrialComplete(true);
-        if (data.isDev) setIsDev(true);
         identifyUser(user.uid);
-        const today = new Date().toISOString().slice(0, 10);
-        if (data.soloRunsDate === today) setSoloRunsToday(data.soloRunsToday ?? 0);
         setPoints(data.points ?? 0);
         setWinStreak(data.winStreak ?? 0);
         setLossStreak(data.lossStreak ?? 0);
@@ -76,18 +69,6 @@ export default function App() {
       }
     });
   }, []);
-
-  async function consumeSoloRun(): Promise<boolean> {
-    if (isDev) return true;
-    if (!firebaseUser) return true; // unauthenticated users can practice freely
-    const today = new Date().toISOString().slice(0, 10);
-    const currentCount = soloRunsToday;
-    if (currentCount >= SOLO_DAILY_LIMIT) return false;
-    const next = currentCount + 1;
-    setSoloRunsToday(next);
-    setDoc(doc(db, 'users', firebaseUser.uid), { soloRunsDate: today, soloRunsToday: next }, { merge: true }).catch(console.error);
-    return true;
-  }
 
   function getSocket() {
     if (!socketRef.current) {
@@ -244,16 +225,9 @@ export default function App() {
     setScreen('waiting');
   }
 
-  async function handleSolo(name: string, color: string) {
-    const allowed = await consumeSoloRun();
-    if (!allowed) {
-      setNotice({
-        title: 'Daily practice limit reached',
-        body: `You have used all ${SOLO_DAILY_LIMIT} solo runs for today. Come back tomorrow, or jump into a free competitive match right now.`,
-        tone: 'info',
-      });
-      return;
-    }
+  // Practice is unlimited: getting better between matches is the whole point
+  // of a skill game, and a solo run has no opponent and no prize.
+  function handleSolo(name: string, color: string) {
     setPlayerName(name);
     setPlayerColor(color);
     const code = Math.random().toString(36).slice(2, 7).toUpperCase();
@@ -343,8 +317,6 @@ export default function App() {
           balance={balance}
           paidEnabled={ENV.realMoney}
           isLoggedIn={!!firebaseUser}
-          soloRunsToday={firebaseUser ? soloRunsToday : undefined}
-          isDev={isDev}
           points={firebaseUser ? points : undefined}
           winStreak={winStreak}
           lossStreak={lossStreak}

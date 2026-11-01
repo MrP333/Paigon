@@ -72,8 +72,6 @@ const TIERS = [
 
 function pc(cents: number) { return (cents / 10).toFixed(0) + ' PC'; }
 
-const SOLO_DAILY_LIMIT = 5;
-
 interface Props {
   onQueue: (stakeId: string, name: string, color: string) => void;
   onSolo: (name: string, color: string) => void;
@@ -85,17 +83,14 @@ interface Props {
   /** Paid tiers, balance, points and the paid-unlock trial exist only where real money is enabled. */
   paidEnabled?: boolean;
   isLoggedIn?: boolean;
-  soloRunsToday?: number;
-  isDev?: boolean;
   points?: number;
   winStreak?: number;
   lossStreak?: number;
 }
 
-export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete, playerName: savedName, playerColor: savedColor, balance = 0, paidEnabled = false, isLoggedIn, soloRunsToday, isDev, points, winStreak = 0, lossStreak = 0 }: Props) {
+export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete, playerName: savedName, playerColor: savedColor, balance = 0, paidEnabled = false, isLoggedIn, points, winStreak = 0, lossStreak = 0 }: Props) {
   const color = savedColor ?? '#22d3ee';
   const [selectedTier, setSelectedTier] = useState('free');
-  const runsLeft = SOLO_DAILY_LIMIT - (soloRunsToday ?? 0);
 
   useEffect(() => {
     if (document.getElementById('rc-home-css')) return;
@@ -371,16 +366,7 @@ export default function HomeScreen({ onQueue, onSolo, onBotTrial, trialComplete,
           >
             Practice Run
           </button>
-          {isLoggedIn && !isDev && soloRunsToday !== undefined && (
-            <div style={{ textAlign: 'center', fontSize: '0.67rem', fontWeight: 600, color: runsLeft <= 0 ? 'rgba(255,107,107,0.7)' : 'rgba(255,255,255,0.2)' }}>
-              {runsLeft <= 0 ? 'No practice runs left today — resets at midnight' : `${runsLeft} of ${SOLO_DAILY_LIMIT} practice runs left today`}
-            </div>
-          )}
-          {isLoggedIn && isDev && (
-            <div style={{ textAlign: 'center', fontSize: '0.67rem', fontWeight: 600, color: 'rgba(168,85,247,0.5)' }}>
-              Dev mode — unlimited practice
-            </div>
-          )}
+          <div style={{ textAlign: 'center', fontSize: '0.67rem', fontWeight: 600, color: 'rgba(255,255,255,0.2)' }}>Unlimited practice</div>
         </div>
 
         {/* Footer note */}
